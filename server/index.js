@@ -256,12 +256,15 @@ function parseRolloutFile(filePath, source, warnings, sessionNames, workspaceLab
 
     if (record.type !== 'event_msg' || record.payload?.type !== 'token_count') return;
 
-    const usage = record.payload?.info?.last_token_usage;
+    const tokenInfo = record.payload?.info;
+    const usage = tokenInfo?.last_token_usage;
     if (!usage) {
-      warnings.push({
-        type: 'missing_last_usage',
-        message: `${filePath}:${index + 1}: token_count 缺少 last_token_usage`,
-      });
+      if (tokenInfo != null) {
+        warnings.push({
+          type: 'missing_last_usage',
+          message: `${filePath}:${index + 1}: token_count 缺少 last_token_usage`,
+        });
+      }
       return;
     }
 
