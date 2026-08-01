@@ -22,7 +22,7 @@ if (!fs.existsSync(path.join(distDir, 'index.html'))) {
   process.exit(1);
 }
 
-const host = args.host || process.env.HOST || '127.0.0.1';
+const host = args.host || process.env.HOST || '0.0.0.0';
 const requestedPort = Number(args.port || process.env.PORT || 8787);
 const port = await findOpenPort(host, requestedPort);
 const codexDir = path.resolve(args.codexDir || process.env.CODEX_DIR || path.join(os.homedir(), '.codex'));
@@ -34,11 +34,12 @@ startServer({
   host,
   port,
   includeArchived,
-  quickMode: args.quick,
+  quickMode: args.quick || undefined,
   staticMode: true,
 });
 
-const url = `http://${host}:${port}`;
+const browserHost = host === '0.0.0.0' ? '127.0.0.1' : host;
+const url = `http://${browserHost}:${port}`;
 console.log(`Local dashboard: ${url}`);
 console.log(`Archived logs: ${includeArchived ? 'included' : 'disabled'}`);
 
@@ -87,7 +88,7 @@ Usage:
 
 Options:
   --codex-dir <path>   Codex data directory. Defaults to ~/.codex
-  --host <host>        Host to bind. Defaults to 127.0.0.1
+  --host <host>        Host to bind. Defaults to 0.0.0.0
   --port <port>        Preferred port. Defaults to 8787
   --no-open            Do not open the browser automatically
   --no-archived        Exclude ~/.codex/archived_sessions

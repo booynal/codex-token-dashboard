@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
   Area,
@@ -7,6 +7,9 @@ import {
   BarChart,
   CartesianGrid,
   Cell,
+  Label,
+  ReferenceDot,
+  ReferenceArea,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -106,6 +109,28 @@ const cnyFmt = new Intl.NumberFormat('zh-CN', {
   maximumFractionDigits: 2,
 });
 const HEAT_LEVEL_THRESHOLDS = [0.1, 0.2, 0.3, 0.4, 0.52, 0.65, 0.76, 0.86, 0.94];
+const TREND_SERIES = [
+  { key: 'totalTokens', label: 'Total', color: '#9f4d36', fill: 'url(#tokenFill)', strokeWidth: 2.5, yAxisId: 'tokens' },
+  { key: 'cachedInputTokens', label: 'Cached', color: '#6d8b74', fill: 'transparent', strokeWidth: 1.8, yAxisId: 'tokens' },
+  { key: 'outputTokens', label: 'Output', color: '#3f6574', fill: 'transparent', strokeWidth: 1.8, yAxisId: 'output' },
+  { key: 'costUsd', label: 'Cost', color: '#b98b45', fill: 'url(#costFill)', strokeWidth: 2, yAxisId: 'cost', strokeDasharray: '4 4' },
+];
+const REASONING_EFFORT_LABELS = {
+  low: '低 (low)',
+  medium: '中 (medium)',
+  high: '高 (high)',
+  xhigh: '超高 (xhigh)',
+  none: '关闭 (none)',
+  unknown: '未知 (unknown)',
+};
+const FIXED_MODEL_ORDER = [
+  'gpt-5.6-sol',
+  'gpt-5.6-terra',
+  'gpt-5.6-luna',
+  'gpt-5.5',
+  'gpt-5.4',
+  'gpt-5.4-mini',
+];
 
 function App() {
   const [raw, setRaw] = useState(null);
@@ -115,6 +140,7 @@ function App() {
   const [filters, setFilters] = useState({
     source: 'all',
     model: 'all',
+    reasoningEffort: 'all',
     cwd: 'all',
     startDate: '',
     endDate: '',
@@ -123,6 +149,10 @@ function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [prices, setPrices] = useState(DEFAULT_PRICES);
   const [fxRate, setFxRate] = useState(7.2);
+  const [visibleTrendSeries, setVisibleTrendSeries] = useState(() => Object.fromEntries(
+    TREND_SERIES.map(({ key }) => [key, true])
+  ));
+  const [hoveredTrendSeries, setHoveredTrendSeries] = useState(null);
   const loadUsage = useCallback(async (force = false, background = false) => {
     if (!background) {
       setError('');
@@ -157,6 +187,18 @@ function App() {
     } catch (err) {
       setError(`读取完整历史失败：${err.message}`);
     }
+  }, []);
+
+  const updateDateRange = useCallback((nextFilters) => {
+    setFilters(nextFilters);
+    if (rangeExtendsBeyondRecentWeek(nextFilters, raw?.scan)
+      && ['ready', 'failed'].includes(raw?.scan?.state)) {
+      void scanFullHistory();
+    }
+  }, [raw?.scan, scanFullHistory]);
+
+  const toggleTrendSeries = useCallback((key) => {
+    setVisibleTrendSeries((current) => ({ ...current, [key]: !current[key] }));
   }, []);
 
   useEffect(() => {
@@ -245,7 +287,8 @@ function App() {
 
       {raw?.scan?.state === 'failed' && (
         <Notice tone="warn" icon={<AlertTriangle size={18} />}>
-          历史日志补全失败：{raw.scan.error}
+          <span>历史日志补全失败：{raw.scan.error}</span>
+          <button className="notice-button" onClick={scanFullHistory}>重新扫描全部历史</button>
         </Notice>
       )}
 
@@ -269,6 +312,12 @@ function App() {
           options={filterOptions.models}
         />
         <Select
+          label="思考级别"
+          value={filters.reasoningEffort}
+          onChange={(reasoningEffort) => setFilters({ ...filters, reasoningEffort })}
+          options={filterOptions.reasoningEfforts}
+        />
+        <Select
           label="项目"
           value={filters.cwd}
           onChange={(cwd) => setFilters({ ...filters, cwd })}
@@ -277,20 +326,20 @@ function App() {
         <DateField
           label="开始"
           value={filters.startDate}
-          onChange={(startDate) => setFilters({ ...filters, startDate, datePreset: '' })}
+          onChange={(startDate) => updateDateRange({ ...filters, startDate, datePreset: '' })}
         />
         <DateField
           label="结束"
           value={filters.endDate}
-          onChange={(endDate) => setFilters({ ...filters, endDate, datePreset: '' })}
+          onChange={(endDate) => updateDateRange({ ...filters, endDate, datePreset: '' })}
         />
         <DatePresetField
           value={filters.datePreset}
-          onChange={(datePreset) => setFilters((current) => ({
-            ...current,
+          onChange={(datePreset) => updateDateRange({
+            ...filters,
             datePreset,
             ...getDateRangePreset(datePreset),
-          }))}
+          })}
         />
       </section>
 
@@ -317,16 +366,16 @@ function App() {
           detail={cnyFmt.format(analytics.today.costUsd * fxRate)}
         />
         <KpiCard
-          icon={<Sparkles size={18} />}
-          label="缓存命中率"
-          value={`${Math.round(analytics.cacheRate * 100)}%`}
-          detail={`${compactTokenFmt.format(analytics.total.cachedInputTokens)} cached`}
-        />
-        <KpiCard
           icon={<CalendarDays size={18} />}
           label="平均每日"
           value={compactTokenFmt.format(analytics.averageDailyTokens)}
           detail={`${analytics.days.length} 个有效日期`}
+        />
+        <KpiCard
+          icon={<Sparkles size={18} />}
+          label="缓存命中率"
+          value={`${Math.round(analytics.cacheRate * 100)}%`}
+          detail={`${compactTokenFmt.format(analytics.total.cachedInputTokens)} cached`}
         />
         {!isFullScanPending && (
           <>
@@ -347,8 +396,15 @@ function App() {
       </section>
 
       <section className="main-grid">
-        <Panel className="trend-panel" title="每日趋势" meta="Token 与估算金额">
-          <TrendChart data={analytics.days} />
+        <Panel className="trend-panel" title="每日趋势" meta="Token、Output 与估算金额">
+          <TrendChart
+            data={analytics.days}
+            visibleSeries={visibleTrendSeries}
+            onToggleSeries={toggleTrendSeries}
+            hoveredSeries={hoveredTrendSeries}
+            onHoverSeries={setHoveredTrendSeries}
+            onSelectDateRange={(range) => updateDateRange({ ...filters, ...range, datePreset: '' })}
+          />
         </Panel>
         <Panel title="用量热力图" meta="按 Asia/Shanghai 日期归属">
           {isFullScanPending && !isQuickMode
@@ -369,6 +425,9 @@ function App() {
       <section className="split-grid bottom-grid">
         <Panel title="模型占比" meta="按 token 总量">
           <ModelChart data={analytics.models} />
+        </Panel>
+        <Panel title="思考级别占比" meta="按 token 总量">
+          <RankList rows={analytics.reasoningEfforts} kind="reasoningEffort" />
         </Panel>
         <Panel title="扫描状态" meta={`${raw?.fileCount || 0} 个文件，${raw?.eventCount || 0} 条 token 事件`}>
           <ScanStatus raw={raw} analytics={allAnalytics} />
@@ -445,6 +504,7 @@ function DatePresetField({ value, onChange }) {
       <select value={value} onChange={(event) => onChange(event.target.value)}>
         <option value="">自定义日期</option>
         <optgroup label="日历范围">
+          <option value="all">全部</option>
           <option value="today">今日</option>
           <option value="thisWeek">本周</option>
           <option value="thisMonth">本月</option>
@@ -506,12 +566,121 @@ function SettingsPanel({ prices, setPrices, fxRate, setFxRate }) {
   );
 }
 
-function TrendChart({ data }) {
+function TrendChart({ data, visibleSeries, onToggleSeries, hoveredSeries, onHoverSeries, onSelectDateRange }) {
+  const [dateDrag, setDateDrag] = useState(null);
+  const chartSurfaceRef = useRef(null);
+  const dateDragRef = useRef(null);
   if (!data.length) return <EmptyState text="当前筛选条件下没有趋势数据" />;
+  const highest = maxBy(data, 'totalTokens');
+  const lowest = minBy(data, 'totalTokens');
+  const hasSingleExtremum = highest?.date === lowest?.date;
+  const hasTokenSeries = TREND_SERIES.some(({ key, yAxisId }) => yAxisId === 'tokens' && visibleSeries[key]);
+  const tokenAxisStyle = getTrendAxisStyle(['totalTokens', 'cachedInputTokens'], hoveredSeries, '#6f665c');
+  const costAxisStyle = getTrendAxisStyle(['costUsd'], hoveredSeries, '#8b7046');
+  const outputAxisStyle = getTrendAxisStyle(['outputTokens'], hoveredSeries, '#3f6574');
+  const renderedSeries = TREND_SERIES
+    .filter(({ key }) => visibleSeries[key])
+    .toSorted((left, right) => {
+      const leftPriority = left.key === hoveredSeries ? 2 : left.key === 'outputTokens' ? 1 : 0;
+      const rightPriority = right.key === hoveredSeries ? 2 : right.key === 'outputTokens' ? 1 : 0;
+      return leftPriority - rightPriority;
+    });
+
+  function getPointerDate(event) {
+    const surface = chartSurfaceRef.current;
+    const svg = surface?.querySelector('svg');
+    const plot = svg?.querySelector('defs > clipPath > rect');
+    if (!surface || !plot) return null;
+
+    const surfaceBounds = surface.getBoundingClientRect();
+    const svgBounds = svg.getBoundingClientRect();
+    const viewBox = svg.viewBox.baseVal;
+    const plotX = Number(plot.getAttribute('x'));
+    const plotY = Number(plot.getAttribute('y'));
+    const plotWidth = Number(plot.getAttribute('width'));
+    const plotHeight = Number(plot.getAttribute('height'));
+    if (!viewBox.width || !viewBox.height || !plotWidth || !plotHeight) return null;
+
+    const scaleX = svgBounds.width / viewBox.width;
+    const scaleY = svgBounds.height / viewBox.height;
+    const left = svgBounds.left + ((plotX - viewBox.x) * scaleX);
+    const top = svgBounds.top + ((plotY - viewBox.y) * scaleY);
+    const width = plotWidth * scaleX;
+    const height = plotHeight * scaleY;
+
+    const ratio = Math.min(1, Math.max(0, (event.clientX - left) / width));
+    const index = Math.round(ratio * (data.length - 1));
+    return {
+      date: data[index]?.date || '',
+      x: left - surfaceBounds.left + (ratio * width),
+      top: top - surfaceBounds.top,
+      height,
+    };
+  }
+
+  function startDateDrag(event) {
+    if (event.button !== 0) return;
+    const point = getPointerDate(event);
+    if (!point?.date) return;
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    const next = {
+      startDate: point.date,
+      endDate: point.date,
+      startX: point.x,
+      endX: point.x,
+      top: point.top,
+      height: point.height,
+    };
+    dateDragRef.current = next;
+    setDateDrag(next);
+  }
+
+  function updateDateDrag(event) {
+    const point = getPointerDate(event);
+    if (!dateDragRef.current || !point?.date) return;
+    const next = { ...dateDragRef.current, endDate: point.date, endX: point.x };
+    dateDragRef.current = next;
+    setDateDrag(next);
+  }
+
+  function finishDateDrag(event) {
+    const current = dateDragRef.current;
+    if (!current) return;
+    const point = getPointerDate(event);
+    const endDate = point?.date || current.endDate;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    dateDragRef.current = null;
+    setDateDrag(null);
+    if (!endDate || current.startDate === endDate) return;
+    onSelectDateRange({
+      startDate: current.startDate < endDate ? current.startDate : endDate,
+      endDate: current.startDate < endDate ? endDate : current.startDate,
+    });
+  }
+
+  function cancelDateDrag(event) {
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    dateDragRef.current = null;
+    setDateDrag(null);
+  }
+
   return (
-    <div className="chart-frame">
-      <ResponsiveContainer width="100%" height={300}>
-        <AreaChart data={data} margin={{ left: 4, right: 16, top: 10, bottom: 0 }}>
+    <div className="chart-frame" onMouseLeave={() => onHoverSeries(null)}>
+      <div
+        className="trend-chart-surface"
+        ref={chartSurfaceRef}
+        onPointerDown={startDateDrag}
+        onPointerMove={updateDateDrag}
+        onPointerUp={finishDateDrag}
+        onPointerCancel={cancelDateDrag}
+      >
+        <ResponsiveContainer width="100%" height={300}>
+          <AreaChart data={data} margin={{ left: 4, right: 16, top: 34, bottom: 0 }}>
           <defs>
             <linearGradient id="tokenFill" x1="0" y1="0" x2="0" y2="1">
               <stop offset="0%" stopColor="#c96442" stopOpacity={0.42} />
@@ -524,20 +693,80 @@ function TrendChart({ data }) {
           </defs>
           <CartesianGrid stroke="#e4ddd2" vertical={false} />
           <XAxis dataKey="date" tick={{ fill: '#6f665c', fontSize: 12 }} tickMargin={10} />
-          <YAxis yAxisId="tokens" tickFormatter={(value) => compactTokenFmt.format(value)} tick={{ fill: '#6f665c', fontSize: 12 }} width={56} />
-          <YAxis yAxisId="cost" orientation="right" tickFormatter={(value) => usdAxisFmt.format(value)} tick={{ fill: '#8b7046', fontSize: 12 }} width={48} />
+          {hasTokenSeries && <YAxis yAxisId="tokens" tickFormatter={(value) => compactTokenFmt.format(value)} width={56} {...tokenAxisStyle} />}
+          {visibleSeries.costUsd && <YAxis yAxisId="cost" orientation="right" tickFormatter={(value) => usdAxisFmt.format(value)} width={48} {...costAxisStyle} />}
+          {visibleSeries.outputTokens && <YAxis yAxisId="output" orientation="right" tickFormatter={(value) => compactTokenFmt.format(value)} width={56} {...outputAxisStyle} />}
           <Tooltip content={<ChartTooltip />} />
-          <Area yAxisId="tokens" type="monotone" dataKey="totalTokens" name="Total" stroke="#9f4d36" fill="url(#tokenFill)" strokeWidth={2.5} />
-          <Area yAxisId="tokens" type="monotone" dataKey="cachedInputTokens" name="Cached" stroke="#6d8b74" fill="transparent" strokeWidth={1.8} />
-          <Area yAxisId="tokens" type="monotone" dataKey="outputTokens" name="Output" stroke="#3f6574" fill="transparent" strokeWidth={1.8} />
-          <Area yAxisId="cost" type="monotone" dataKey="costUsd" name="Cost" stroke="#b98b45" fill="url(#costFill)" strokeWidth={2} strokeDasharray="4 4" />
-        </AreaChart>
-      </ResponsiveContainer>
-      <div className="chart-legend">
-        <span><i style={{ background: '#9f4d36' }} />Token</span>
-        <span><i style={{ background: '#6d8b74' }} />Cached</span>
-        <span><i style={{ background: '#3f6574' }} />Output</span>
-        <span><i className="dash" />Cost</span>
+            {dateDrag && dateDrag.startDate !== dateDrag.endDate && (
+              <ReferenceArea
+                x1={dateDrag.startDate < dateDrag.endDate ? dateDrag.startDate : dateDrag.endDate}
+                x2={dateDrag.startDate < dateDrag.endDate ? dateDrag.endDate : dateDrag.startDate}
+                fill="#b66243"
+                fillOpacity={0.18}
+                stroke="#9f4d36"
+                strokeOpacity={0.55}
+                zIndex={10}
+              />
+            )}
+          {renderedSeries.map((series) => {
+            const isDimmed = Boolean(hoveredSeries && hoveredSeries !== series.key);
+            return (
+              <Area
+                key={series.key}
+                yAxisId={series.yAxisId}
+                type="monotone"
+                dataKey={series.key}
+                name={series.label}
+                stroke={isDimmed ? '#bdb5ab' : series.color}
+                fill={series.fill}
+                strokeWidth={series.strokeWidth}
+                strokeDasharray={series.strokeDasharray}
+                strokeOpacity={isDimmed ? 0.12 : 1}
+                fillOpacity={isDimmed ? 0.04 : 1}
+                activeDot={{ r: 5, fill: series.color, onMouseEnter: () => onHoverSeries(series.key) }}
+                onMouseEnter={() => onHoverSeries(series.key)}
+              />
+            );
+          })}
+          {visibleSeries.totalTokens && (!hoveredSeries || hoveredSeries === 'totalTokens') && highest && (
+            <ReferenceDot x={highest.date} y={highest.totalTokens} yAxisId="tokens" r={5} fill="#9f4d36" stroke="#fffdf8" strokeWidth={2}>
+              <Label value={`${hasSingleExtremum ? '最高/最低' : '最高'} ${compactTokenFmt.format(highest.totalTokens)}`} position="top" fill="#75402f" fontSize={12} fontWeight={700} />
+            </ReferenceDot>
+          )}
+          {visibleSeries.totalTokens && (!hoveredSeries || hoveredSeries === 'totalTokens') && !hasSingleExtremum && lowest && (
+            <ReferenceDot x={lowest.date} y={lowest.totalTokens} yAxisId="tokens" r={5} fill="#9f4d36" stroke="#fffdf8" strokeWidth={2}>
+              <Label value={`最低 ${compactTokenFmt.format(lowest.totalTokens)}`} position="top" fill="#75402f" fontSize={12} fontWeight={700} />
+            </ReferenceDot>
+          )}
+          </AreaChart>
+        </ResponsiveContainer>
+        {dateDrag && Math.abs(dateDrag.endX - dateDrag.startX) > 1 && (
+          <div
+            className="trend-date-selection"
+            style={{
+              left: `${Math.min(dateDrag.startX, dateDrag.endX)}px`,
+              top: `${dateDrag.top}px`,
+              width: `${Math.abs(dateDrag.endX - dateDrag.startX)}px`,
+              height: `${dateDrag.height}px`,
+            }}
+          />
+        )}
+      </div>
+      <div className="chart-legend" onMouseLeave={() => onHoverSeries(null)}>
+        {TREND_SERIES.map((series) => (
+          <button
+            className={`chart-legend-button ${visibleSeries[series.key] ? '' : 'is-hidden'} ${hoveredSeries === series.key ? 'is-highlighted' : ''}`}
+            key={series.key}
+            type="button"
+            aria-pressed={visibleSeries[series.key]}
+            onClick={() => onToggleSeries(series.key)}
+            onMouseEnter={() => visibleSeries[series.key] && onHoverSeries(series.key)}
+            title={`${visibleSeries[series.key] ? '隐藏' : '显示'}${series.label}`}
+          >
+            <i className={series.strokeDasharray ? 'dash' : ''} style={series.strokeDasharray ? undefined : { background: series.color }} />
+            {series.label}
+          </button>
+        ))}
       </div>
     </div>
   );
@@ -571,18 +800,36 @@ function ChartTooltip({ active, payload, label }) {
   const row = payload[0]?.payload || {};
   return (
     <div className="chart-tooltip">
-      <strong>{label || row.model}</strong>
+      <strong>{row.date ? formatDateWithWeekday(row.date) : label || row.model}</strong>
       {payload.map((item) => (
         <span key={item.dataKey}>
           {item.name || item.dataKey}: {formatTooltipValue(item.dataKey, item.value)}
         </span>
       ))}
       {row.costUsd != null && !payload.some((item) => item.dataKey === 'costUsd') && <span>Cost: {usdFmt.format(row.costUsd)}</span>}
+      {row.reasoningEffortBreakdown?.length > 0 && (
+        <GroupBreakdown title="思考级别" rows={row.reasoningEffortBreakdown} getLabel={(entry) => reasoningEffortLabel(entry.reasoningEffort)} />
+      )}
+    </div>
+  );
+}
+
+function GroupBreakdown({ title, rows, getLabel }) {
+  return (
+    <div className="group-breakdown">
+      <b>{title}</b>
+      {rows.slice(0, 6).map((row) => (
+        <span key={getLabel(row)}>
+          <span>{getLabel(row)}</span>
+          <span>{compactTokenFmt.format(row.totalTokens)} · {Math.round(row.share * 100)}%</span>
+        </span>
+      ))}
     </div>
   );
 }
 
 function Heatmap({ data, selectedStart, selectedEnd }) {
+  const [hoveredCell, setHoveredCell] = useState(null);
   if (!data.length) return <EmptyState text="没有可展示的热力图数据" />;
   const { cells, months, startDate, endDate } = buildHeatmapCells(data);
   const heatLevels = buildHeatLevels(cells);
@@ -613,11 +860,13 @@ function Heatmap({ data, selectedStart, selectedEnd }) {
             <div
               key={cell.date}
               className={`heat-cell heat-${heatLevels.get(cell.date) || 0} ${isDateInRange(cell.date, selectedStart, selectedEnd) ? 'selected' : ''}`}
-              title={`${cell.date}: ${numberFmt.format(cell.totalTokens)} tokens`}
+              onMouseEnter={() => setHoveredCell(cell)}
+              onMouseLeave={() => setHoveredCell(null)}
             />
           ))}
         </div>
       </div>
+      {hoveredCell && <HeatmapTooltip cell={hoveredCell} />}
       <div className="heatmap-footer">
         <span>{startDate} 至 {endDate}</span>
         <div className="heatmap-legend">
@@ -632,18 +881,33 @@ function Heatmap({ data, selectedStart, selectedEnd }) {
   );
 }
 
+function HeatmapTooltip({ cell }) {
+  return (
+    <div className="heatmap-tooltip" role="tooltip">
+      <strong>{formatDateWithWeekday(cell.date)}</strong>
+      <span>总计: {numberFmt.format(cell.totalTokens)} tokens</span>
+      <span>缓存: {numberFmt.format(cell.cachedInputTokens)} tokens</span>
+      <span>输出: {numberFmt.format(cell.outputTokens)} tokens</span>
+      <span>估算: {usdFmt.format(cell.costUsd)}</span>
+    </div>
+  );
+}
+
 function RankList({ rows, kind }) {
   if (!rows.length) return <EmptyState text="没有项目数据" />;
   return (
     <div className="rank-list">
       {rows.slice(0, 8).map((row, index) => (
-        <div className="rank-row" key={row.cwd || row.model}>
+        <div className="rank-row" key={row.cwd || row.model || row.reasoningEffort} title={kind === 'project' ? row.cwd : undefined}>
           <span className="rank-index">{index + 1}</span>
           <div>
-            <strong title={row.cwd}>{kind === 'project' ? row.projectName : row.model}</strong>
+            <strong>{kind === 'project' ? row.projectName : kind === 'reasoningEffort' ? reasoningEffortLabel(row.reasoningEffort) : row.model}</strong>
             <small>{compactTokenFmt.format(row.totalTokens)} tokens · {usdFmt.format(row.costUsd)}</small>
           </div>
           <div className="rank-bar"><span style={{ width: `${row.share * 100}%` }} /></div>
+          {kind === 'reasoningEffort' && row.modelBreakdown?.length > 0 && (
+            <GroupBreakdown title="模型" rows={row.modelBreakdown} getLabel={(entry) => entry.model} />
+          )}
         </div>
       ))}
     </div>
@@ -713,8 +977,17 @@ function fillDefaultDateRange(current, events) {
   };
 }
 
+function rangeExtendsBeyondRecentWeek(filters, scan) {
+  if (!scan?.recentStartDate) return false;
+  const recentEndDate = shanghaiToday();
+  return !filters.startDate
+    || !filters.endDate
+    || filters.startDate < scan.recentStartDate
+    || filters.endDate > recentEndDate;
+}
+
 function getDateRangePreset(preset) {
-  if (!preset) return {};
+  if (!preset || preset === 'all') return { startDate: '', endDate: '' };
   const end = parseDate(shanghaiToday());
   const start = new Date(end);
 
@@ -746,13 +1019,17 @@ function getDateRangePreset(preset) {
 }
 
 function getFilterOptions(events, projectLabels) {
-  const models = [...new Set(events.map((event) => event.model || 'unknown'))].sort();
+  const models = sortModels([...new Set(events.map((event) => event.model || 'unknown'))]);
+  const reasoningEfforts = [...new Set(events.map((event) => normalizeReasoningEffort(event.reasoningEffort)))].sort(
+    (left, right) => reasoningEffortSortOrder(left) - reasoningEffortSortOrder(right)
+  );
   const cwdList = [...new Map(events.map((event) => [
     event.cwd || 'unknown',
     projectLabels.get(event.cwd || 'unknown') || event.projectName || projectNameFromPath(event.cwd || 'unknown'),
   ]))].sort((a, b) => a[1].localeCompare(b[1], 'zh-CN'));
   return {
     models: [['all', '全部模型'], ...models.map((model) => [model, model])],
+    reasoningEfforts: [['all', '全部思考级别'], ...reasoningEfforts.map((effort) => [effort, reasoningEffortLabel(effort)])],
     cwdList: [['all', '全部项目'], ...cwdList],
   };
 }
@@ -762,6 +1039,7 @@ function applyFilters(events, filters) {
     if (CLIENT_SOURCE_FILTERS.has(filters.source) && event.client !== filters.source) return false;
     if (filters.source !== 'all' && !CLIENT_SOURCE_FILTERS.has(filters.source) && event.source !== filters.source) return false;
     if (filters.model !== 'all' && event.model !== filters.model) return false;
+    if (filters.reasoningEffort !== 'all' && normalizeReasoningEffort(event.reasoningEffort) !== filters.reasoningEffort) return false;
     if (filters.cwd !== 'all' && (event.cwd || 'unknown') !== filters.cwd) return false;
     if (filters.startDate && event.date < filters.startDate) return false;
     if (filters.endDate && event.date > filters.endDate) return false;
@@ -774,6 +1052,9 @@ function buildAnalytics(events, prices, projectLabels) {
   const daily = new Map();
   const models = new Map();
   const projects = new Map();
+  const reasoningEfforts = new Map();
+  const modelEfforts = new Map();
+  const effortModels = new Map();
   const sessions = new Map();
   const total = emptyTotals();
 
@@ -782,6 +1063,10 @@ function buildAnalytics(events, prices, projectLabels) {
     addTo(total, event, costUsd);
     addToMap(daily, event.date, event, costUsd, { date: event.date });
     addToMap(models, event.model, event, costUsd, { model: event.model });
+    const reasoningEffort = normalizeReasoningEffort(event.reasoningEffort);
+    addToMap(reasoningEfforts, reasoningEffort, event, costUsd, { reasoningEffort });
+    addToNestedMap(modelEfforts, event.model, reasoningEffort, event, costUsd, { reasoningEffort });
+    addToNestedMap(effortModels, reasoningEffort, event.model, event, costUsd, { model: event.model });
     const cwd = event.cwd || 'unknown';
     const projectName = projectLabels.get(cwd) || event.projectName || projectNameFromPath(cwd);
     addToMap(projects, cwd, event, costUsd, {
@@ -798,8 +1083,15 @@ function buildAnalytics(events, prices, projectLabels) {
   }
 
   const days = [...daily.values()].sort((a, b) => a.date.localeCompare(b.date));
-  const modelRows = withShares([...models.values()].sort((a, b) => b.totalTokens - a.totalTokens));
+  const modelRows = withShares([...models.values()].sort((a, b) => b.totalTokens - a.totalTokens)).map((row) => ({
+    ...row,
+    reasoningEffortBreakdown: buildBreakdownRows(modelEfforts.get(row.model)),
+  }));
   const projectRows = withShares([...projects.values()].sort((a, b) => b.totalTokens - a.totalTokens));
+  const reasoningEffortRows = withShares([...reasoningEfforts.values()].sort((a, b) => b.totalTokens - a.totalTokens)).map((row) => ({
+    ...row,
+    modelBreakdown: buildBreakdownRows(effortModels.get(row.reasoningEffort)),
+  }));
   const sessionRows = withCacheRates([...sessions.values()]).sort((a, b) => b.totalTokens - a.totalTokens);
   const todayRow = daily.get(today) || emptyTotals({ date: today });
   const topDay = maxBy(days, 'totalTokens');
@@ -815,6 +1107,7 @@ function buildAnalytics(events, prices, projectLabels) {
     days,
     models: modelRows,
     projects: projectRows,
+    reasoningEfforts: reasoningEffortRows,
     sessions: sessionRows,
     cacheRate: total.inputTokens ? total.cachedInputTokens / total.inputTokens : 0,
     averageDailyTokens: days.length ? total.totalTokens / days.length : 0,
@@ -848,6 +1141,17 @@ function estimateCost(event, prices) {
 function addToMap(map, key, event, costUsd, base) {
   if (!map.has(key)) map.set(key, emptyTotals(base));
   addTo(map.get(key), event, costUsd);
+}
+
+function addToNestedMap(groups, groupKey, nestedKey, event, costUsd, base) {
+  if (!groups.has(groupKey)) groups.set(groupKey, new Map());
+  addToMap(groups.get(groupKey), nestedKey, event, costUsd, base);
+}
+
+function buildBreakdownRows(groups) {
+  const rows = [...(groups?.values() || [])].sort((left, right) => right.totalTokens - left.totalTokens);
+  const totalTokens = rows.reduce((total, row) => total + row.totalTokens, 0);
+  return rows.map((row) => ({ ...row, share: totalTokens ? row.totalTokens / totalTokens : 0 }));
 }
 
 function addTo(target, event, costUsd) {
@@ -926,9 +1230,60 @@ function maxBy(rows, field) {
   return rows.reduce((best, row) => (!best || row[field] > best[field] ? row : best), null);
 }
 
+function minBy(rows, field) {
+  return rows.reduce((best, row) => (!best || row[field] < best[field] ? row : best), null);
+}
+
+function normalizeReasoningEffort(value) {
+  const effort = String(value || '').toLowerCase();
+  return REASONING_EFFORT_LABELS[effort] ? effort : 'unknown';
+}
+
+function reasoningEffortLabel(value) {
+  return REASONING_EFFORT_LABELS[normalizeReasoningEffort(value)];
+}
+
+function reasoningEffortSortOrder(value) {
+  return ['xhigh', 'high', 'medium', 'low', 'none', 'unknown'].indexOf(value);
+}
+
+function sortModels(models) {
+  const available = new Set(models);
+  const unspecified = models
+    .filter((model) => model !== 'unknown' && !FIXED_MODEL_ORDER.includes(model))
+    .sort((left, right) => right.localeCompare(left));
+  const ordered = [];
+
+  for (const fixedModel of FIXED_MODEL_ORDER) {
+    while (unspecified.length && unspecified[0].localeCompare(fixedModel) > 0) {
+      ordered.push(unspecified.shift());
+    }
+    if (available.has(fixedModel)) ordered.push(fixedModel);
+  }
+
+  ordered.push(...unspecified);
+  if (available.has('unknown')) ordered.push('unknown');
+  return ordered;
+}
+
+function getTrendAxisStyle(seriesKeys, hoveredSeries, color) {
+  const isDimmed = Boolean(hoveredSeries && !seriesKeys.includes(hoveredSeries));
+  const opacity = isDimmed ? 0.16 : 1;
+  return {
+    tick: { fill: color, fillOpacity: opacity, fontSize: 12 },
+    axisLine: { stroke: color, strokeOpacity: opacity },
+    tickLine: { stroke: color, strokeOpacity: opacity },
+  };
+}
+
 function formatTooltipValue(dataKey, value) {
   if (dataKey === 'costUsd') return usdFmt.format(value || 0);
   return numberFmt.format(value || 0);
+}
+
+function formatDateWithWeekday(date) {
+  const weekday = ['日', '一', '二', '三', '四', '五', '六'][parseDate(date).getUTCDay()];
+  return `${date} 周${weekday}`;
 }
 
 function buildHeatmapCells(days) {
@@ -943,7 +1298,12 @@ function buildHeatmapCells(days) {
   const cells = [];
   for (let cursor = new Date(start); cursor <= end; cursor.setDate(cursor.getDate() + 1)) {
     const date = cursor.toISOString().slice(0, 10);
-    cells.push({ date, totalTokens: byDate.get(date)?.totalTokens || 0 });
+    cells.push({
+      ...emptyTotals(),
+      ...byDate.get(date),
+      date,
+      totalTokens: byDate.get(date)?.totalTokens || 0,
+    });
   }
   return {
     cells,

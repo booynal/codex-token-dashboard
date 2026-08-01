@@ -75,6 +75,7 @@ export function createApp(options = {}) {
       recentStartDate,
       quickMode: config.quickMode,
     });
+    console.log(formatScanLog('Recent seven-day scan complete', recentResult));
     if (!config.quickMode) startFullScan(generation);
     return cache;
   }
@@ -88,6 +89,7 @@ export function createApp(options = {}) {
       recentStartDate,
       quickMode: config.quickMode,
     });
+    console.log('Full-history scan started');
     setTimeout(() => {
       void completeFullScan(generation, recentStartDate);
     }, BACKGROUND_SCAN_DELAY_MS);
@@ -103,14 +105,17 @@ export function createApp(options = {}) {
         recentStartDate,
         quickMode: config.quickMode,
       });
+      console.log(formatScanLog('Full-history scan complete', fullResult));
     } catch (error) {
       if (generation !== scanGeneration || !cache) return;
+      fullScanGeneration = null;
       cache = withScanStatus(cache, {
         state: 'failed',
         recentStartDate,
         quickMode: config.quickMode,
         error: error.message,
       });
+      console.error(`Full-history scan failed: ${error.message}`);
     }
   }
 
@@ -143,7 +148,7 @@ function normalizeConfig(options = {}) {
     quickMode: options.quickMode ?? process.env.CODEX_QUICK_MODE === 'true',
     staticMode: Boolean(options.staticMode),
     distDir: path.resolve(options.distDir || path.join(__dirname, '..', 'dist')),
-    host: options.host || process.env.HOST || '127.0.0.1',
+    host: options.host || process.env.HOST || '0.0.0.0',
     port: Number(options.port || process.env.PORT || 8787),
   };
 }
@@ -160,7 +165,7 @@ async function scanUsage(config, { minDate = '' } = {}) {
   for (const source of sourceDirs) {
     const rolloutFiles = listRolloutFiles(source.dir, warnings, minDate);
     for (const file of rolloutFiles) {
-      const parsed = parseRolloutFile(file, source, warnings, sessionNames, workspaceLabels);
+      const parsed = parseRolloutFile(file, source, warnings, sessionNames, workspaceLabels, minDate);
       files.push(parsed.file);
       events.push(...parsed.events);
     }
@@ -187,6 +192,10 @@ function withScanStatus(result, scan) {
     ...result,
     scan,
   };
+}
+
+function formatScanLog(label, result) {
+  return `${label}: ${result.fileCount} files, ${result.eventCount} token events, ${result.scanMs}ms`;
 }
 
 function getRecentStartDate() {
@@ -227,12 +236,9 @@ function listRolloutFiles(root, warnings, minDate = '') {
     for (const entry of entries) {
       const fullPath = path.join(dir, entry.name);
       if (entry.isDirectory()) {
-        const date = getDateFromPath(fullPath);
-        if (minDate && date && date < minDate) continue;
         stack.push(fullPath);
       } else if (entry.isFile() && /^rollout-.*\.jsonl$/.test(entry.name)) {
-        const date = getDateFromPath(fullPath);
-        if (minDate && date && date < minDate) continue;
+        if (minDate && !isRecentRolloutFile(fullPath, minDate, warnings)) continue;
         result.push(fullPath);
       }
     }
@@ -246,6 +252,18 @@ function getDateFromPath(filePath) {
   if (directoryMatch) return `${directoryMatch[1]}-${directoryMatch[2]}-${directoryMatch[3]}`;
   const filenameMatch = path.basename(filePath).match(/^rollout-(\d{4}-\d{2}-\d{2})T/);
   return filenameMatch?.[1] || '';
+}
+
+function isRecentRolloutFile(filePath, minDate, warnings) {
+  const pathDate = getDateFromPath(filePath);
+  if (pathDate && pathDate >= minDate) return true;
+
+  try {
+    return formatShanghaiDate(fs.statSync(filePath).mtime) >= minDate;
+  } catch (error) {
+    warnings.push({ type: 'stat_file_failed', message: `${filePath}: ${error.message}` });
+    return false;
+  }
 }
 
 function readSessionNames(codexDir, warnings) {
@@ -299,7 +317,7 @@ function readWorkspaceLabels(codexDir, warnings) {
   }
 }
 
-function parseRolloutFile(filePath, source, warnings, sessionNames, workspaceLabels) {
+function parseRolloutFile(filePath, source, warnings, sessionNames, workspaceLabels, minDate = '') {
   const fileSummary = {
     path: filePath,
     source: source.key,
@@ -318,6 +336,7 @@ function parseRolloutFile(filePath, source, warnings, sessionNames, workspaceLab
   let currentModel = 'unknown';
   let currentCwd = 'unknown';
   let currentOriginator = 'unknown';
+  let currentReasoningEffort = 'unknown';
   let sessionId = path.basename(filePath, '.jsonl').replace(/^rollout-/, '');
   let content = '';
   const events = [];
@@ -348,6 +367,7 @@ function parseRolloutFile(filePath, source, warnings, sessionNames, workspaceLab
       sessionId = record.payload?.id || sessionId;
       currentCwd = record.payload?.cwd || currentCwd;
       currentOriginator = record.payload?.originator || currentOriginator;
+      currentReasoningEffort = getReasoningEffort(record.payload) || currentReasoningEffort;
       fileSummary.sessionId = sessionId;
       fileSummary.sessionName = getSessionName(sessionId, sessionNames);
       fileSummary.cwd = currentCwd;
@@ -362,9 +382,13 @@ function parseRolloutFile(filePath, source, warnings, sessionNames, workspaceLab
     if (record.type === 'turn_context') {
       currentModel = record.payload?.model || currentModel;
       currentCwd = record.payload?.cwd || currentCwd;
+      currentReasoningEffort = getReasoningEffort(record.payload) || currentReasoningEffort;
       return;
     }
 
+    if (record.type === 'event_msg') {
+      currentReasoningEffort = getReasoningEffort(record.payload) || currentReasoningEffort;
+    }
     if (record.type !== 'event_msg' || record.payload?.type !== 'token_count') return;
 
     const tokenInfo = record.payload?.info;
@@ -380,6 +404,8 @@ function parseRolloutFile(filePath, source, warnings, sessionNames, workspaceLab
     }
 
     const timestamp = record.timestamp || new Date(0).toISOString();
+    const date = formatShanghaiDate(timestamp);
+    if (minDate && date < minDate) return;
     const inputTokens = Number(usage.input_tokens || 0);
     const cachedInputTokens = Number(usage.cached_input_tokens || 0);
     const outputTokens = Number(usage.output_tokens || 0);
@@ -391,7 +417,7 @@ function parseRolloutFile(filePath, source, warnings, sessionNames, workspaceLab
     events.push({
       id: `${sessionId}:${index + 1}`,
       timestamp,
-      date: formatShanghaiDate(timestamp),
+      date,
       source: source.key,
       sourceLabel: source.label,
       filePath,
@@ -402,6 +428,7 @@ function parseRolloutFile(filePath, source, warnings, sessionNames, workspaceLab
       originator: currentOriginator,
       client: getClientType(currentOriginator),
       model: currentModel,
+      reasoningEffort: currentReasoningEffort,
       planType: record.payload?.plan_type || null,
       inputTokens,
       cachedInputTokens,
@@ -423,6 +450,15 @@ function parseRolloutFile(filePath, source, warnings, sessionNames, workspaceLab
   fileSummary.client = fileSummary.client || getClientType(currentOriginator);
 
   return { file: fileSummary, events };
+}
+
+function getReasoningEffort(payload) {
+  const effort = payload?.reasoning_effort
+    || payload?.effort
+    || payload?.thread_settings?.reasoning_effort
+    || payload?.thread_settings?.collaboration_mode?.settings?.reasoning_effort
+    || payload?.collaboration_mode?.settings?.reasoning_effort;
+  return typeof effort === 'string' && effort ? effort.toLowerCase() : null;
 }
 
 function getClientType(originator) {

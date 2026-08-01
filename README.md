@@ -9,9 +9,15 @@ It reads local Codex session files, aggregates `last_token_usage`, and shows dai
 - The initial view is filtered to the most recent seven days.
 - Default mode returns the recent result first, then refreshes automatically when the background full-history scan completes.
 - Quick mode returns the recent result and stops. Use the **扫描全部历史** button in the dashboard to start the full-history scan.
+- In quick mode, choosing **全部**, another preset, or a manual date range outside the recent week starts the full-history scan immediately.
+- Historical total and cost cards remain hidden until the full scan finishes; scan status and session/model/project counts then switch from the recent-week scope to full history.
+- The reasoning-effort filter and breakdown aggregate `low`, `medium`, `high`, and `xhigh` from rollout context; older records without the field appear as `未知`.
 - The source filter can isolate `Codex Desktop` and `Codex CLI` sessions using the rollout `originator` field.
 - Compact token values use `K`, `M`, and `B`; KPI values stay on one line and preserve the full value in the hover title.
-- The daily trend's cost series and legend both use the same dashed line. The heatmap uses ten percentile-based active-usage levels with a higher-contrast color scale; before a quick-mode full scan, it represents only the loaded recent week.
+- The daily trend has independent token, cost, and output axes. Its `Total`, `Cached`, `Output`, and `Cost` legend entries can be toggled; hover a legend or line to focus that series. Total's high and low points are labeled, and tooltips include the weekday.
+- Drag across the daily trend's plot area to show a translucent date range. Releasing the pointer fills the start/end filters and applies the selected range.
+- The heatmap uses ten percentile-based active-usage levels and follows the dashboard's warm neutral palette. Hover a day to see its weekday, total, cache, output, and estimated cost. Before a quick-mode full scan, it represents only the loaded recent week.
+- Hover a project share to reveal its absolute path. Model shares expose their reasoning-effort grouping; reasoning-effort shares expose their model grouping.
 
 ## Quick Start
 
@@ -49,10 +55,16 @@ To retain the startup and scan-status output in a local log file:
 npm start -- --quick --no-open 2>&1 | tee -a ~/.codex/codex-token-dashboard.log
 ```
 
-By default the dashboard opens at:
+By default the dashboard listens on all local network interfaces. It opens locally at:
 
 ```text
 http://127.0.0.1:8787
+```
+
+To open it from another device on the same network, use:
+
+```text
+http://<this-machine-lan-ip>:8787
 ```
 
 If the port is busy, the CLI automatically chooses the next available port.
@@ -66,7 +78,7 @@ codex-token-dashboard [options]
 | Option | Description |
 | --- | --- |
 | `--codex-dir <path>` | Codex data directory. Defaults to `~/.codex`. |
-| `--host <host>` | Host to bind. Defaults to `127.0.0.1`. |
+| `--host <host>` | Host to bind. Defaults to `0.0.0.0`; use `127.0.0.1` to restrict access to this machine. |
 | `--port <port>` | Preferred port. Defaults to `8787`. |
 | `--no-open` | Do not open the browser automatically. |
 | `--no-archived` | Exclude `archived_sessions`. |
@@ -76,6 +88,12 @@ Environment variables are also supported:
 
 ```bash
 CODEX_DIR=/path/to/.codex PORT=8788 CODEX_QUICK_MODE=true codex-token-dashboard
+```
+
+Restrict access to the current machine when needed:
+
+```bash
+HOST=127.0.0.1 codex-token-dashboard
 ```
 
 ## What It Reads
@@ -101,9 +119,9 @@ It intentionally does not aggregate `total_token_usage`, because that field is c
 
 ## Privacy
 
-This is a local-only tool. It does not upload your Codex logs or usage data.
+This tool does not upload your Codex logs or usage data.
 
-The local server binds to `127.0.0.1` by default. Your browser talks to the local Express API, and the API reads the configured Codex directory from disk.
+The server binds to `0.0.0.0` by default, so devices on the same network can access it through this machine's LAN IP. The dashboard has no authentication; use `--host 127.0.0.1` when the data must remain accessible only on this machine.
 
 Codex logs may include project paths, session names, model names, and other metadata. Review the source before running the dashboard against sensitive environments.
 
@@ -141,8 +159,8 @@ npm run dev
 
 The development setup runs:
 
-- Vite frontend at `http://127.0.0.1:5173`
-- Express API at `http://127.0.0.1:8787`
+- Vite frontend bound to `0.0.0.0:5173`
+- Express API bound to `0.0.0.0:8787`
 
 Checks:
 
