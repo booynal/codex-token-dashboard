@@ -6,21 +6,37 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const HOME = os.homedir();
 const DEFAULT_CODEX_DIR = path.join(HOME, '.codex');
+const RECENT_DAYS = 7;
+const BACKGROUND_SCAN_DELAY_MS = 100;
 
 export function createApp(options = {}) {
   const app = express();
   const config = normalizeConfig(options);
   let cache = null;
+  let recentScanPromise = null;
+  let scanGeneration = 0;
+  let fullScanGeneration = null;
 
   app.use(express.json());
 
   app.get('/api/health', (_req, res) => {
-    res.json({ ok: true, codexDir: config.codexDir, includeArchived: config.includeArchived });
+    res.json({
+      ok: true,
+      codexDir: config.codexDir,
+      includeArchived: config.includeArchived,
+      quickMode: config.quickMode,
+    });
   });
 
   app.get('/api/usage', async (_req, res) => {
     try {
-      cache = cache || await scanUsage(config);
+      if (!cache) {
+        recentScanPromise = recentScanPromise || startUsageScan().finally(() => {
+          recentScanPromise = null;
+        });
+        res.json(await recentScanPromise);
+        return;
+      }
       res.json(cache);
     } catch (error) {
       res.status(500).json({ error: error.message });
@@ -29,12 +45,74 @@ export function createApp(options = {}) {
 
   app.post('/api/refresh', async (_req, res) => {
     try {
-      cache = await scanUsage(config);
-      res.json(cache);
+      res.json(await startUsageScan());
     } catch (error) {
       res.status(500).json({ error: error.message });
     }
   });
+
+  app.post('/api/scan-full', async (_req, res) => {
+    try {
+      if (!cache) {
+        await startUsageScan();
+        res.json(startFullScan(scanGeneration));
+        return;
+      }
+      res.json(startFullScan(scanGeneration));
+    } catch (error) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  async function startUsageScan() {
+    const generation = ++scanGeneration;
+    const recentStartDate = getRecentStartDate();
+    const recentResult = await scanUsage(config, { minDate: recentStartDate });
+    if (generation !== scanGeneration) return cache;
+
+    cache = withScanStatus(recentResult, {
+      state: config.quickMode ? 'ready' : 'scanning',
+      recentStartDate,
+      quickMode: config.quickMode,
+    });
+    if (!config.quickMode) startFullScan(generation);
+    return cache;
+  }
+
+  function startFullScan(generation) {
+    if (!cache || fullScanGeneration === generation) return cache;
+    fullScanGeneration = generation;
+    const recentStartDate = cache.scan?.recentStartDate || getRecentStartDate();
+    cache = withScanStatus(cache, {
+      state: 'scanning',
+      recentStartDate,
+      quickMode: config.quickMode,
+    });
+    setTimeout(() => {
+      void completeFullScan(generation, recentStartDate);
+    }, BACKGROUND_SCAN_DELAY_MS);
+    return cache;
+  }
+
+  async function completeFullScan(generation, recentStartDate) {
+    try {
+      const fullResult = await scanUsage(config);
+      if (generation !== scanGeneration) return;
+      cache = withScanStatus(fullResult, {
+        state: 'complete',
+        recentStartDate,
+        quickMode: config.quickMode,
+      });
+    } catch (error) {
+      if (generation !== scanGeneration || !cache) return;
+      cache = withScanStatus(cache, {
+        state: 'failed',
+        recentStartDate,
+        quickMode: config.quickMode,
+        error: error.message,
+      });
+    }
+  }
 
   if (config.staticMode) {
     app.use(express.static(config.distDir));
@@ -51,6 +129,7 @@ export function startServer(options = {}) {
   const server = app.listen(config.port, config.host, () => {
     console.log(`Codex token dashboard listening on http://${config.host}:${config.port}`);
     console.log(`Reading Codex data from ${config.codexDir}`);
+    console.log(`Quick mode: ${config.quickMode ? 'enabled' : 'disabled'}`);
   });
   return { app, config, server };
 }
@@ -61,6 +140,7 @@ function normalizeConfig(options = {}) {
   return {
     codexDir,
     includeArchived: options.includeArchived ?? process.env.CODEX_INCLUDE_ARCHIVED !== 'false',
+    quickMode: options.quickMode ?? process.env.CODEX_QUICK_MODE === 'true',
     staticMode: Boolean(options.staticMode),
     distDir: path.resolve(options.distDir || path.join(__dirname, '..', 'dist')),
     host: options.host || process.env.HOST || '127.0.0.1',
@@ -68,7 +148,7 @@ function normalizeConfig(options = {}) {
   };
 }
 
-async function scanUsage(config) {
+async function scanUsage(config, { minDate = '' } = {}) {
   const startedAt = new Date();
   const warnings = [];
   const events = [];
@@ -78,7 +158,7 @@ async function scanUsage(config) {
   const workspaceLabels = readWorkspaceLabels(config.codexDir, warnings);
 
   for (const source of sourceDirs) {
-    const rolloutFiles = listRolloutFiles(source.dir, warnings);
+    const rolloutFiles = listRolloutFiles(source.dir, warnings, minDate);
     for (const file of rolloutFiles) {
       const parsed = parseRolloutFile(file, source, warnings, sessionNames, workspaceLabels);
       files.push(parsed.file);
@@ -102,6 +182,20 @@ async function scanUsage(config) {
   };
 }
 
+function withScanStatus(result, scan) {
+  return {
+    ...result,
+    scan,
+  };
+}
+
+function getRecentStartDate() {
+  const today = formatShanghaiDate(new Date());
+  const start = new Date(`${today}T00:00:00Z`);
+  start.setUTCDate(start.getUTCDate() - (RECENT_DAYS - 1));
+  return start.toISOString().slice(0, 10);
+}
+
 function getSourceDirs(config) {
   const dirs = [
     { key: 'current', label: '当前日志', dir: path.join(config.codexDir, 'sessions') },
@@ -112,7 +206,7 @@ function getSourceDirs(config) {
   return dirs;
 }
 
-function listRolloutFiles(root, warnings) {
+function listRolloutFiles(root, warnings, minDate = '') {
   if (!fs.existsSync(root)) {
     warnings.push({ type: 'missing_root', message: `日志目录不存在：${root}` });
     return [];
@@ -133,14 +227,25 @@ function listRolloutFiles(root, warnings) {
     for (const entry of entries) {
       const fullPath = path.join(dir, entry.name);
       if (entry.isDirectory()) {
+        const date = getDateFromPath(fullPath);
+        if (minDate && date && date < minDate) continue;
         stack.push(fullPath);
       } else if (entry.isFile() && /^rollout-.*\.jsonl$/.test(entry.name)) {
+        const date = getDateFromPath(fullPath);
+        if (minDate && date && date < minDate) continue;
         result.push(fullPath);
       }
     }
   }
 
   return result;
+}
+
+function getDateFromPath(filePath) {
+  const directoryMatch = filePath.match(/\/(\d{4})\/(\d{2})\/(\d{2})(?:\/|$)/);
+  if (directoryMatch) return `${directoryMatch[1]}-${directoryMatch[2]}-${directoryMatch[3]}`;
+  const filenameMatch = path.basename(filePath).match(/^rollout-(\d{4}-\d{2}-\d{2})T/);
+  return filenameMatch?.[1] || '';
 }
 
 function readSessionNames(codexDir, warnings) {
@@ -203,6 +308,8 @@ function parseRolloutFile(filePath, source, warnings, sessionNames, workspaceLab
     sessionName: null,
     cwd: null,
     projectName: null,
+    originator: null,
+    client: null,
     cliVersion: null,
     modelProvider: null,
     eventCount: 0,
@@ -210,6 +317,7 @@ function parseRolloutFile(filePath, source, warnings, sessionNames, workspaceLab
 
   let currentModel = 'unknown';
   let currentCwd = 'unknown';
+  let currentOriginator = 'unknown';
   let sessionId = path.basename(filePath, '.jsonl').replace(/^rollout-/, '');
   let content = '';
   const events = [];
@@ -239,10 +347,13 @@ function parseRolloutFile(filePath, source, warnings, sessionNames, workspaceLab
     if (record.type === 'session_meta') {
       sessionId = record.payload?.id || sessionId;
       currentCwd = record.payload?.cwd || currentCwd;
+      currentOriginator = record.payload?.originator || currentOriginator;
       fileSummary.sessionId = sessionId;
       fileSummary.sessionName = getSessionName(sessionId, sessionNames);
       fileSummary.cwd = currentCwd;
       fileSummary.projectName = getProjectName(currentCwd, workspaceLabels);
+      fileSummary.originator = currentOriginator;
+      fileSummary.client = getClientType(currentOriginator);
       fileSummary.cliVersion = record.payload?.cli_version || null;
       fileSummary.modelProvider = record.payload?.model_provider || null;
       return;
@@ -288,6 +399,8 @@ function parseRolloutFile(filePath, source, warnings, sessionNames, workspaceLab
       sessionName: getSessionName(sessionId, sessionNames),
       cwd: currentCwd,
       projectName: getProjectName(currentCwd, workspaceLabels),
+      originator: currentOriginator,
+      client: getClientType(currentOriginator),
       model: currentModel,
       planType: record.payload?.plan_type || null,
       inputTokens,
@@ -306,8 +419,17 @@ function parseRolloutFile(filePath, source, warnings, sessionNames, workspaceLab
   fileSummary.sessionName = fileSummary.sessionName || getSessionName(sessionId, sessionNames);
   fileSummary.cwd = fileSummary.cwd || currentCwd;
   fileSummary.projectName = fileSummary.projectName || getProjectName(currentCwd, workspaceLabels);
+  fileSummary.originator = fileSummary.originator || currentOriginator;
+  fileSummary.client = fileSummary.client || getClientType(currentOriginator);
 
   return { file: fileSummary, events };
+}
+
+function getClientType(originator) {
+  if (originator === 'Codex Desktop') return 'desktop';
+  if (originator === 'codex_vscode') return 'vscode';
+  if (originator === 'codex_exec') return 'exec';
+  return 'cli';
 }
 
 function cleanThreadName(name) {

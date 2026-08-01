@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
   Area,
@@ -77,9 +77,10 @@ const MODEL_MAP = {
   'gpt-5.1-codex-mini': 'gpt54Mini',
   'gpt-5.4-mini': 'gpt54Mini',
 };
+const CLIENT_SOURCE_FILTERS = new Set(['desktop', 'cli']);
 
 const numberFmt = new Intl.NumberFormat('zh-CN');
-const compactFmt = new Intl.NumberFormat('zh-CN', {
+const compactTokenFmt = new Intl.NumberFormat('en-US', {
   notation: 'compact',
   maximumFractionDigits: 1,
 });
@@ -87,6 +88,12 @@ const usdFmt = new Intl.NumberFormat('en-US', {
   style: 'currency',
   currency: 'USD',
   maximumFractionDigits: 2,
+});
+const compactUsdFmt = new Intl.NumberFormat('en-US', {
+  style: 'currency',
+  currency: 'USD',
+  notation: 'compact',
+  maximumFractionDigits: 1,
 });
 const usdAxisFmt = new Intl.NumberFormat('en-US', {
   style: 'currency',
@@ -98,6 +105,7 @@ const cnyFmt = new Intl.NumberFormat('zh-CN', {
   currency: 'CNY',
   maximumFractionDigits: 2,
 });
+const HEAT_LEVEL_THRESHOLDS = [0.1, 0.2, 0.3, 0.4, 0.52, 0.65, 0.76, 0.86, 0.94];
 
 function App() {
   const [raw, setRaw] = useState(null);
@@ -115,14 +123,11 @@ function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [prices, setPrices] = useState(DEFAULT_PRICES);
   const [fxRate, setFxRate] = useState(7.2);
-
-  useEffect(() => {
-    loadUsage();
-  }, []);
-
-  async function loadUsage(force = false) {
-    setError('');
-    force ? setRefreshing(true) : setLoading(true);
+  const loadUsage = useCallback(async (force = false, background = false) => {
+    if (!background) {
+      setError('');
+      force ? setRefreshing(true) : setLoading(true);
+    }
     try {
       const response = await fetch(force ? '/api/refresh' : '/api/usage', {
         method: force ? 'POST' : 'GET',
@@ -134,10 +139,36 @@ function App() {
     } catch (err) {
       setError(`读取 Codex 日志失败：${err.message}`);
     } finally {
-      setLoading(false);
-      setRefreshing(false);
+      if (!background) {
+        setLoading(false);
+        setRefreshing(false);
+      }
     }
-  }
+  }, []);
+
+  const scanFullHistory = useCallback(async () => {
+    setError('');
+    try {
+      const response = await fetch('/api/scan-full', { method: 'POST' });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const data = await response.json();
+      setRaw(data);
+      setFilters((current) => fillDefaultDateRange(current, data.events || []));
+    } catch (err) {
+      setError(`读取完整历史失败：${err.message}`);
+    }
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => loadUsage(), 0);
+    return () => window.clearTimeout(timer);
+  }, [loadUsage]);
+
+  useEffect(() => {
+    if (raw?.scan?.state !== 'scanning') return undefined;
+    const timer = window.setTimeout(() => loadUsage(false, true), 1000);
+    return () => window.clearTimeout(timer);
+  }, [raw, loadUsage]);
 
   const events = useMemo(() => raw?.events || [], [raw]);
   const projectLabels = useMemo(() => getProjectDisplayNames(events), [events]);
@@ -157,6 +188,9 @@ function App() {
     () => buildAnalytics(events, prices, projectLabels),
     [events, prices, projectLabels]
   );
+  const hasFullHistory = raw?.scan?.state === 'complete';
+  const isFullScanPending = Boolean(raw) && !hasFullHistory;
+  const isQuickMode = raw?.scan?.quickMode === true;
 
   if (loading) {
     return (
@@ -196,6 +230,25 @@ function App() {
         </Notice>
       )}
 
+      {raw?.scan?.state === 'ready' && (
+        <Notice tone="warn" icon={<Sparkles size={18} />}>
+          <span>近一周数据已就绪。</span>
+          <button className="notice-button" onClick={scanFullHistory}>扫描全部历史</button>
+        </Notice>
+      )}
+
+      {raw?.scan?.state === 'scanning' && (
+        <Notice tone="warn" icon={<RefreshCw size={18} className="spin" />}>
+          近一周数据已就绪，正在后台补全历史日志。
+        </Notice>
+      )}
+
+      {raw?.scan?.state === 'failed' && (
+        <Notice tone="warn" icon={<AlertTriangle size={18} />}>
+          历史日志补全失败：{raw.scan.error}
+        </Notice>
+      )}
+
       <section className="filter-strip">
         <Select
           label="范围"
@@ -205,6 +258,8 @@ function App() {
             ['all', '全部日志'],
             ['current', '当前日志'],
             ['archived', '归档日志'],
+            ['desktop', 'Codex 桌面端'],
+            ['cli', 'Codex CLI'],
           ]}
         />
         <Select
@@ -248,43 +303,47 @@ function App() {
         />
       )}
 
-      <section className="kpi-grid">
+      <section className={`kpi-grid ${isFullScanPending ? 'recent-only' : ''}`}>
         <KpiCard
           icon={<Activity size={18} />}
           label="今日 Token"
-          value={compactFmt.format(analytics.today.totalTokens)}
+          value={compactTokenFmt.format(analytics.today.totalTokens)}
           detail={`${numberFmt.format(analytics.today.totalTokens)} tokens`}
         />
         <KpiCard
           icon={<CircleDollarSign size={18} />}
           label="今日估算金额"
-          value={usdFmt.format(analytics.today.costUsd)}
+          value={compactUsdFmt.format(analytics.today.costUsd)}
           detail={cnyFmt.format(analytics.today.costUsd * fxRate)}
-        />
-        <KpiCard
-          icon={<Database size={18} />}
-          label="历史总量"
-          value={compactFmt.format(analytics.total.totalTokens)}
-          detail={`${numberFmt.format(analytics.total.totalTokens)} tokens`}
-        />
-        <KpiCard
-          icon={<TrendingUp size={18} />}
-          label="历史估算金额"
-          value={usdFmt.format(analytics.total.costUsd)}
-          detail={cnyFmt.format(analytics.total.costUsd * fxRate)}
         />
         <KpiCard
           icon={<Sparkles size={18} />}
           label="缓存命中率"
           value={`${Math.round(analytics.cacheRate * 100)}%`}
-          detail={`${compactFmt.format(analytics.total.cachedInputTokens)} cached`}
+          detail={`${compactTokenFmt.format(analytics.total.cachedInputTokens)} cached`}
         />
         <KpiCard
           icon={<CalendarDays size={18} />}
           label="平均每日"
-          value={compactFmt.format(analytics.averageDailyTokens)}
+          value={compactTokenFmt.format(analytics.averageDailyTokens)}
           detail={`${analytics.days.length} 个有效日期`}
         />
+        {!isFullScanPending && (
+          <>
+            <KpiCard
+              icon={<Database size={18} />}
+              label="历史总量"
+              value={compactTokenFmt.format(analytics.total.totalTokens)}
+              detail={`${numberFmt.format(analytics.total.totalTokens)} tokens`}
+            />
+            <KpiCard
+              icon={<TrendingUp size={18} />}
+              label="历史估算金额"
+              value={compactUsdFmt.format(analytics.total.costUsd)}
+              detail={cnyFmt.format(analytics.total.costUsd * fxRate)}
+            />
+          </>
+        )}
       </section>
 
       <section className="main-grid">
@@ -292,7 +351,9 @@ function App() {
           <TrendChart data={analytics.days} />
         </Panel>
         <Panel title="用量热力图" meta="按 Asia/Shanghai 日期归属">
-          <Heatmap data={allAnalytics.days} selectedStart={filters.startDate} selectedEnd={filters.endDate} />
+          {isFullScanPending && !isQuickMode
+            ? <HistoryLoading />
+            : <Heatmap data={allAnalytics.days} selectedStart={filters.startDate} selectedEnd={filters.endDate} />}
         </Panel>
       </section>
 
@@ -310,7 +371,7 @@ function App() {
           <ModelChart data={analytics.models} />
         </Panel>
         <Panel title="扫描状态" meta={`${raw?.fileCount || 0} 个文件，${raw?.eventCount || 0} 条 token 事件`}>
-          <ScanStatus raw={raw} analytics={analytics} />
+          <ScanStatus raw={raw} analytics={allAnalytics} />
         </Panel>
       </section>
     </Shell>
@@ -347,9 +408,9 @@ function KpiCard({ icon, label, value, detail }) {
     <article className="kpi-card">
       <div className="kpi-icon">{icon}</div>
       <div>
-        <p>{label}</p>
-        <strong>{value}</strong>
-        <span>{detail}</span>
+        <p title={label}>{label}</p>
+        <strong title={value}>{value}</strong>
+        <span title={detail}>{detail}</span>
       </div>
     </article>
   );
@@ -463,7 +524,7 @@ function TrendChart({ data }) {
           </defs>
           <CartesianGrid stroke="#e4ddd2" vertical={false} />
           <XAxis dataKey="date" tick={{ fill: '#6f665c', fontSize: 12 }} tickMargin={10} />
-          <YAxis yAxisId="tokens" tickFormatter={(value) => compactFmt.format(value)} tick={{ fill: '#6f665c', fontSize: 12 }} width={56} />
+          <YAxis yAxisId="tokens" tickFormatter={(value) => compactTokenFmt.format(value)} tick={{ fill: '#6f665c', fontSize: 12 }} width={56} />
           <YAxis yAxisId="cost" orientation="right" tickFormatter={(value) => usdAxisFmt.format(value)} tick={{ fill: '#8b7046', fontSize: 12 }} width={48} />
           <Tooltip content={<ChartTooltip />} />
           <Area yAxisId="tokens" type="monotone" dataKey="totalTokens" name="Total" stroke="#9f4d36" fill="url(#tokenFill)" strokeWidth={2.5} />
@@ -476,7 +537,7 @@ function TrendChart({ data }) {
         <span><i style={{ background: '#9f4d36' }} />Token</span>
         <span><i style={{ background: '#6d8b74' }} />Cached</span>
         <span><i style={{ background: '#3f6574' }} />Output</span>
-        <span><i className="dash" style={{ background: '#b98b45' }} />Cost</span>
+        <span><i className="dash" />Cost</span>
       </div>
     </div>
   );
@@ -491,7 +552,7 @@ function ModelChart({ data }) {
       <ResponsiveContainer width="100%" height="100%">
         <BarChart data={rows} layout="vertical" margin={{ left: 2, right: 14, top: 4, bottom: 4 }} barCategoryGap={12}>
           <CartesianGrid stroke="#e4ddd2" horizontal={false} />
-          <XAxis type="number" tickFormatter={(value) => compactFmt.format(value)} tick={{ fill: '#6f665c', fontSize: 12 }} />
+          <XAxis type="number" tickFormatter={(value) => compactTokenFmt.format(value)} tick={{ fill: '#6f665c', fontSize: 12 }} />
           <YAxis type="category" dataKey="model" width={104} tick={{ fill: '#4a4038', fontSize: 12 }} />
           <Tooltip content={<ChartTooltip />} />
           <Bar dataKey="totalTokens" radius={[0, 4, 4, 0]} barSize={28}>
@@ -561,7 +622,7 @@ function Heatmap({ data, selectedStart, selectedEnd }) {
         <span>{startDate} 至 {endDate}</span>
         <div className="heatmap-legend">
           <span>少</span>
-          {[0, 1, 2, 3, 4, 5].map((level) => (
+          {Array.from({ length: HEAT_LEVEL_THRESHOLDS.length + 2 }, (_, level) => level).map((level) => (
             <i key={level} className={`heat-${level}`} />
           ))}
           <span>多</span>
@@ -580,7 +641,7 @@ function RankList({ rows, kind }) {
           <span className="rank-index">{index + 1}</span>
           <div>
             <strong title={row.cwd}>{kind === 'project' ? row.projectName : row.model}</strong>
-            <small>{compactFmt.format(row.totalTokens)} tokens · {usdFmt.format(row.costUsd)}</small>
+            <small>{compactTokenFmt.format(row.totalTokens)} tokens · {usdFmt.format(row.costUsd)}</small>
           </div>
           <div className="rank-bar"><span style={{ width: `${row.share * 100}%` }} /></div>
         </div>
@@ -605,11 +666,12 @@ function HighlightGrid({ highlights }) {
 
 function ScanStatus({ raw, analytics }) {
   const warnings = raw?.warnings || [];
+  const scopeLabel = raw?.scan?.state === 'complete' ? '全量历史' : '近一周';
   return (
     <div className="status-stack">
       <div className="status-line">
         <FolderGit2 size={17} />
-        <span>{analytics.sessions.length} 个会话，{analytics.models.length} 个模型，{analytics.projects.length} 个项目路径。</span>
+        <span>{scopeLabel}：{analytics.sessions.length} 个会话，{analytics.models.length} 个模型，{analytics.projects.length} 个项目路径。</span>
       </div>
       <div className="status-line">
         <Database size={17} />
@@ -633,13 +695,21 @@ function EmptyState({ text }) {
   return <div className="empty-state">{text}</div>;
 }
 
+function HistoryLoading() {
+  return (
+    <div className="history-loading" role="status">
+      <RefreshCw size={22} className="spin" />
+      <span>正在汇总全量历史日志</span>
+    </div>
+  );
+}
+
 function fillDefaultDateRange(current, events) {
   if (current.startDate || current.endDate || !events.length) return current;
-  const dates = [...new Set(events.map((event) => event.date))].sort();
   return {
     ...current,
-    startDate: dates[0],
-    endDate: dates[dates.length - 1],
+    datePreset: 'lastWeek',
+    ...getDateRangePreset('lastWeek'),
   };
 }
 
@@ -689,7 +759,8 @@ function getFilterOptions(events, projectLabels) {
 
 function applyFilters(events, filters) {
   return events.filter((event) => {
-    if (filters.source !== 'all' && event.source !== filters.source) return false;
+    if (CLIENT_SOURCE_FILTERS.has(filters.source) && event.client !== filters.source) return false;
+    if (filters.source !== 'all' && !CLIENT_SOURCE_FILTERS.has(filters.source) && event.source !== filters.source) return false;
     if (filters.model !== 'all' && event.model !== filters.model) return false;
     if (filters.cwd !== 'all' && (event.cwd || 'unknown') !== filters.cwd) return false;
     if (filters.startDate && event.date < filters.startDate) return false;
@@ -820,33 +891,33 @@ function buildHighlights({ topDay, topCostDay, topSession, topOutputDay, topCach
   return [
     {
       label: '最高用量日',
-      value: compactFmt.format(topDay?.totalTokens || 0),
+      value: compactTokenFmt.format(topDay?.totalTokens || 0),
       detail: `${topDay?.date || '-'} · ${numberFmt.format(topDay?.totalTokens || 0)} tokens`,
     },
     {
       label: '最高成本日',
       value: usdFmt.format(topCostDay?.costUsd || 0),
-      detail: `${topCostDay?.date || '-'} · ${compactFmt.format(topCostDay?.totalTokens || 0)} tokens`,
+      detail: `${topCostDay?.date || '-'} · ${compactTokenFmt.format(topCostDay?.totalTokens || 0)} tokens`,
     },
     {
       label: '缓存命中最高会话',
       value: `${Math.round((topCacheRateSession?.cacheRate || 0) * 100)}%`,
-      detail: `${topCacheRateSession?.sessionName || '-'} · ${compactFmt.format(topCacheRateSession?.cachedInputTokens || 0)} cached`,
+      detail: `${topCacheRateSession?.sessionName || '-'} · ${compactTokenFmt.format(topCacheRateSession?.cachedInputTokens || 0)} cached`,
     },
     {
       label: '最高单会话',
-      value: compactFmt.format(topSession?.totalTokens || 0),
+      value: compactTokenFmt.format(topSession?.totalTokens || 0),
       detail: `${topSession?.sessionName || '-'} · ${usdFmt.format(topSession?.costUsd || 0)}`,
     },
     {
       label: '最高输出日',
-      value: compactFmt.format(topOutputDay?.outputTokens || 0),
+      value: compactTokenFmt.format(topOutputDay?.outputTokens || 0),
       detail: `${topOutputDay?.date || '-'} · output tokens`,
     },
     {
       label: '最活跃项目',
       value: topProject?.projectName || '-',
-      detail: `${compactFmt.format(topProject?.totalTokens || 0)} tokens · ${usdFmt.format(topProject?.costUsd || 0)}`,
+      detail: `${compactTokenFmt.format(topProject?.totalTokens || 0)} tokens · ${usdFmt.format(topProject?.costUsd || 0)}`,
     },
   ];
 }
@@ -903,7 +974,7 @@ function buildMonthLabels(cells) {
 }
 
 function buildHeatLevels(cells) {
-  const values = [...new Set(cells.map((cell) => cell.totalTokens).filter(Boolean))].sort((a, b) => a - b);
+  const values = cells.map((cell) => cell.totalTokens).filter(Boolean).sort((a, b) => a - b);
   const levels = new Map();
 
   for (const cell of cells) {
@@ -912,7 +983,9 @@ function buildHeatLevels(cells) {
       continue;
     }
     const rank = values.findLastIndex((value) => value <= cell.totalTokens) + 1;
-    levels.set(cell.date, Math.max(1, Math.ceil((rank / values.length) * 5)));
+    const percentile = rank / values.length;
+    const level = HEAT_LEVEL_THRESHOLDS.findIndex((threshold) => percentile <= threshold) + 1;
+    levels.set(cell.date, level || HEAT_LEVEL_THRESHOLDS.length + 1);
   }
 
   return levels;

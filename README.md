@@ -4,6 +4,15 @@ A local web dashboard for visualizing Codex token usage from your `~/.codex` log
 
 It reads local Codex session files, aggregates `last_token_usage`, and shows daily trends with separate token/cost axes, a calendar heatmap, responsive project/model filters, project/session breakdowns, highlight moments, cache usage, and estimated API-equivalent cost.
 
+## Dashboard Behavior
+
+- The initial view is filtered to the most recent seven days.
+- Default mode returns the recent result first, then refreshes automatically when the background full-history scan completes.
+- Quick mode returns the recent result and stops. Use the **扫描全部历史** button in the dashboard to start the full-history scan.
+- The source filter can isolate `Codex Desktop` and `Codex CLI` sessions using the rollout `originator` field.
+- Compact token values use `K`, `M`, and `B`; KPI values stay on one line and preserve the full value in the hover title.
+- The daily trend's cost series and legend both use the same dashed line. The heatmap uses ten percentile-based active-usage levels with a higher-contrast color scale; before a quick-mode full scan, it represents only the loaded recent week.
+
 ## Quick Start
 
 Run from npm:
@@ -28,6 +37,18 @@ npm run build
 npm start
 ```
 
+From the cloned repository, start in quick mode to load only the most recent seven days. The dashboard can then load the full history on demand:
+
+```bash
+npm start -- --quick
+```
+
+To retain the startup and scan-status output in a local log file:
+
+```bash
+npm start -- --quick --no-open 2>&1 | tee -a ~/.codex/codex-token-dashboard.log
+```
+
 By default the dashboard opens at:
 
 ```text
@@ -49,11 +70,12 @@ codex-token-dashboard [options]
 | `--port <port>` | Preferred port. Defaults to `8787`. |
 | `--no-open` | Do not open the browser automatically. |
 | `--no-archived` | Exclude `archived_sessions`. |
+| `--quick` | Scan the most recent seven days first. Load all history from the dashboard when needed. |
 
 Environment variables are also supported:
 
 ```bash
-CODEX_DIR=/path/to/.codex PORT=8788 codex-token-dashboard
+CODEX_DIR=/path/to/.codex PORT=8788 CODEX_QUICK_MODE=true codex-token-dashboard
 ```
 
 ## What It Reads
@@ -71,6 +93,7 @@ It uses:
 
 - `event_msg` records whose payload type is `token_count`
 - `payload.info.last_token_usage` for aggregation
+- `session_meta.payload.originator` to distinguish Codex Desktop and Codex CLI sessions in the source filter
 - `session_index.jsonl` for human-readable session names
 - `.codex-global-state.json` for workspace labels when available
 

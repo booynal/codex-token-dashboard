@@ -34,6 +34,7 @@ startServer({
   host,
   port,
   includeArchived,
+  quickMode: args.quick,
   staticMode: true,
 });
 
@@ -52,6 +53,7 @@ function parseArgs(argv) {
     port: '',
     noOpen: false,
     noArchived: false,
+    quick: false,
     help: false,
   };
 
@@ -65,6 +67,7 @@ function parseArgs(argv) {
     else if (name === '--port') parsed.port = readValue();
     else if (arg === '--no-open') parsed.noOpen = true;
     else if (arg === '--no-archived') parsed.noArchived = true;
+    else if (arg === '--quick') parsed.quick = true;
     else if (arg === '--help' || arg === '-h') parsed.help = true;
     else {
       console.error(`Unknown option: ${arg}`);
@@ -88,6 +91,7 @@ Options:
   --port <port>        Preferred port. Defaults to 8787
   --no-open            Do not open the browser automatically
   --no-archived        Exclude ~/.codex/archived_sessions
+  --quick              Scan recent seven days only; full history is loaded on demand
   -h, --help           Show this help message
 `);
 }
