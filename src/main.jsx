@@ -19,11 +19,13 @@ import {
   Activity,
   AlertTriangle,
   CalendarDays,
+  ChevronDown,
   CircleDollarSign,
   Database,
   FolderGit2,
   RefreshCw,
   Settings2,
+  SlidersHorizontal,
   Sparkles,
   TrendingUp,
 } from 'lucide-react';
@@ -164,12 +166,12 @@ function App() {
     datePreset: '',
   });
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
   const [prices, setPrices] = useState(DEFAULT_PRICES);
   const [fxRate, setFxRate] = useState(7.2);
-  const [visibleTrendSeries, setVisibleTrendSeries] = useState(() => Object.fromEntries(
-    TREND_SERIES.map(({ key }) => [key, true])
-  ));
+  const [visibleTrendSeries, setVisibleTrendSeries] = useState(getDefaultTrendSeriesVisibility);
   const [hoveredTrendSeries, setHoveredTrendSeries] = useState(null);
+  const isMobile = useMediaQuery('(max-width: 720px)');
   const loadUsage = useCallback(async (force = false, background = false) => {
     if (!background) {
       setError('');
@@ -250,6 +252,13 @@ function App() {
   const hasFullHistory = raw?.scan?.state === 'complete';
   const isFullScanPending = Boolean(raw) && !hasFullHistory;
   const isQuickMode = raw?.scan?.quickMode === true;
+  const activeFilterCount = [
+    filters.source !== 'all',
+    filters.model !== 'all',
+    filters.reasoningEffort !== 'all',
+    filters.cwd !== 'all',
+    Boolean(filters.startDate || filters.endDate),
+  ].filter(Boolean).length;
 
   if (loading) {
     return (
@@ -311,7 +320,24 @@ function App() {
         </Notice>
       )}
 
-      <section className="filter-strip">
+      <button
+        className="filter-toggle"
+        type="button"
+        aria-expanded={mobileFiltersOpen}
+        aria-controls="dashboard-filters"
+        onClick={() => setMobileFiltersOpen((current) => !current)}
+      >
+        <span><SlidersHorizontal size={17} />筛选条件</span>
+        <span className="filter-toggle-state">
+          {activeFilterCount ? `${activeFilterCount} 项生效` : '全部数据'}
+          <ChevronDown className={mobileFiltersOpen ? 'is-open' : ''} size={17} />
+        </span>
+      </button>
+
+      <section
+        className={`filter-strip ${mobileFiltersOpen ? 'is-mobile-open' : ''}`}
+        id="dashboard-filters"
+      >
         <Select
           label="范围"
           value={filters.source}
@@ -423,6 +449,7 @@ function App() {
             hoveredSeries={hoveredTrendSeries}
             onHoverSeries={setHoveredTrendSeries}
             onSelectDateRange={(range) => updateDateRange({ ...filters, ...range, datePreset: '' })}
+            isMobile={isMobile}
           />
         </Panel>
         <Panel title="用量热力图" meta="按北京时间统计每日用量">
@@ -615,7 +642,7 @@ function SettingsPanel({ prices, setPrices, fxRate, setFxRate }) {
   );
 }
 
-function TrendChart({ data, visibleSeries, onToggleSeries, hoveredSeries, onHoverSeries, onSelectDateRange }) {
+function TrendChart({ data, visibleSeries, onToggleSeries, hoveredSeries, onHoverSeries, onSelectDateRange, isMobile }) {
   const [dateDrag, setDateDrag] = useState(null);
   const [axisHitZones, setAxisHitZones] = useState([]);
   const [hoveredExtremum, setHoveredExtremum] = useState(null);
@@ -632,7 +659,7 @@ function TrendChart({ data, visibleSeries, onToggleSeries, hoveredSeries, onHove
   const outputAxis = getTrendAxisConfig(data, 'outputTokens', totalAxisMaximum / 100, false, TREND_COLORS.output, outputAxisStyle.tick.fillOpacity);
   const costAxis = getTrendAxisConfig(data, 'costUsd', totalAxisMaximum / 1_000_000, true, TREND_COLORS.cost, costAxisStyle.tick.fillOpacity);
   const extremumMarkers = TREND_SERIES
-    .filter(({ key }) => key !== 'cachedInputTokens' && visibleSeries[key])
+    .filter(({ key }) => key !== 'cachedInputTokens' && visibleSeries[key] && (!isMobile || key === 'totalTokens'))
     .map((series) => ({ series, extrema: getTrendExtrema(data, series.key) }));
   const renderedSeries = TREND_SERIES
     .filter(({ key }) => visibleSeries[key])
@@ -649,6 +676,7 @@ function TrendChart({ data, visibleSeries, onToggleSeries, hoveredSeries, onHove
   useEffect(() => {
     const surface = chartSurfaceRef.current;
     if (!surface) return undefined;
+    if (isMobile) return undefined;
 
     let frame = 0;
     const measure = () => {
@@ -670,7 +698,7 @@ function TrendChart({ data, visibleSeries, onToggleSeries, hoveredSeries, onHove
       resizeObserver?.disconnect();
       mutationObserver?.disconnect();
     };
-  }, [data, visibleSeries.costUsd, visibleSeries.outputTokens]);
+  }, [data, isMobile, visibleSeries.costUsd, visibleSeries.outputTokens]);
 
   if (!data.length) return <EmptyState text="当前筛选条件下没有趋势数据" />;
 
@@ -775,16 +803,19 @@ function TrendChart({ data, visibleSeries, onToggleSeries, hoveredSeries, onHove
 
   return (
     <div className="chart-frame" onMouseLeave={clearTrendHover}>
+      <TrendMobileSummary data={data} />
       <div
-        className="trend-chart-surface"
+        className={`trend-chart-surface ${isMobile ? 'is-mobile' : ''}`}
         ref={chartSurfaceRef}
-        onPointerDown={startDateDrag}
-        onPointerMove={updateDateDrag}
-        onPointerUp={finishDateDrag}
-        onPointerCancel={cancelDateDrag}
+        onPointerDown={isMobile ? undefined : startDateDrag}
+        onPointerMove={isMobile ? undefined : updateDateDrag}
+        onPointerUp={isMobile ? undefined : finishDateDrag}
+        onPointerCancel={isMobile ? undefined : cancelDateDrag}
       >
-        <ResponsiveContainer width="100%" height={300}>
-          <AreaChart data={data} margin={{ left: 4, right: 16, top: 34, bottom: 0 }}>
+        <ResponsiveContainer width="100%" height={isMobile ? 264 : 300}>
+          <AreaChart data={data} margin={isMobile
+            ? { left: 4, right: 2, top: 28, bottom: 0 }
+            : { left: 4, right: 16, top: 34, bottom: 0 }}>
           <defs>
             <linearGradient id="tokenFill" x1="0" y1="0" x2="0" y2="1">
               <stop offset="0%" stopColor={TREND_COLORS.total} stopOpacity={0.42} />
@@ -796,10 +827,17 @@ function TrendChart({ data, visibleSeries, onToggleSeries, hoveredSeries, onHove
             </linearGradient>
           </defs>
           <CartesianGrid stroke="#e4ddd2" vertical={false} />
-          <XAxis dataKey="date" tick={{ fill: '#6f665c', fontSize: 12 }} tickMargin={10} />
-          {hasTokenSeries && <YAxis className="trend-axis trend-axis-tokens" yAxisId={TREND_AXIS_IDS.tokens} domain={tokenAxis.domain} ticks={tokenAxis.ticks} interval={0} allowDataOverflow width={56} {...tokenAxisStyle} tick={<TrendAxisTick axis={tokenAxis} orientation="left" />} />}
-          {visibleSeries.outputTokens && <YAxis className="trend-axis trend-axis-output" yAxisId={TREND_AXIS_IDS.output} domain={outputAxis.domain} ticks={outputAxis.ticks} interval={0} allowDataOverflow orientation="right" width={56} {...outputAxisStyle} tick={<TrendAxisTick axis={outputAxis} orientation="right" />} />}
-          {visibleSeries.costUsd && <YAxis className="trend-axis trend-axis-cost" yAxisId={TREND_AXIS_IDS.cost} domain={costAxis.domain} ticks={costAxis.ticks} interval={0} allowDataOverflow orientation="right" width={48} {...costAxisStyle} tick={<TrendAxisTick axis={costAxis} orientation="right" />} />}
+          <XAxis
+            dataKey="date"
+            tick={{ fill: '#6f665c', fontSize: isMobile ? 11 : 12 }}
+            tickFormatter={isMobile ? formatShortDate : undefined}
+            tickMargin={10}
+            minTickGap={isMobile ? 22 : 5}
+            interval={isMobile ? 'preserveStartEnd' : undefined}
+          />
+          {hasTokenSeries && <YAxis className="trend-axis trend-axis-tokens" yAxisId={TREND_AXIS_IDS.tokens} domain={tokenAxis.domain} ticks={tokenAxis.ticks} interval={0} allowDataOverflow width={isMobile ? 52 : 56} {...tokenAxisStyle} tick={<TrendAxisTick axis={tokenAxis} orientation="left" compact={isMobile} />} />}
+          {visibleSeries.outputTokens && <YAxis hide={isMobile} className="trend-axis trend-axis-output" yAxisId={TREND_AXIS_IDS.output} domain={outputAxis.domain} ticks={outputAxis.ticks} interval={0} allowDataOverflow orientation="right" width={isMobile ? 0 : 56} {...outputAxisStyle} tick={<TrendAxisTick axis={outputAxis} orientation="right" />} />}
+          {visibleSeries.costUsd && <YAxis hide={isMobile} className="trend-axis trend-axis-cost" yAxisId={TREND_AXIS_IDS.cost} domain={costAxis.domain} ticks={costAxis.ticks} interval={0} allowDataOverflow orientation="right" width={isMobile ? 0 : 48} {...costAxisStyle} tick={<TrendAxisTick axis={costAxis} orientation="right" />} />}
           <Tooltip content={<ChartTooltip />} />
             {dateDrag && dateDrag.startDate !== dateDrag.endDate && (
               <ReferenceArea
@@ -845,7 +883,7 @@ function TrendChart({ data, visibleSeries, onToggleSeries, hoveredSeries, onHove
           ))}
           </AreaChart>
         </ResponsiveContainer>
-        {axisHitZones.map((zone) => (
+        {!isMobile && axisHitZones.map((zone) => (
           <div
             key={zone.id}
             className={`trend-axis-hit-zone ${zone.axisLabel ? 'trend-axis-label-hit-zone' : ''} ${zone.extremum ? 'trend-extremum-hit-zone' : ''}`}
@@ -889,7 +927,36 @@ function TrendChart({ data, visibleSeries, onToggleSeries, hoveredSeries, onHove
   );
 }
 
-function TrendAxisTick({ x, y, payload, axis, orientation }) {
+function TrendMobileSummary({ data }) {
+  const periodTotal = data.reduce((sum, day) => sum + day.totalTokens, 0);
+  const peak = data.reduce((current, day) => !current || day.totalTokens > current.totalTokens ? day : current, null);
+  const latest = data.at(-1);
+  const previous = data.at(-2);
+  const change = previous?.totalTokens
+    ? (latest.totalTokens - previous.totalTokens) / previous.totalTokens
+    : null;
+
+  return (
+    <dl className="trend-mobile-summary">
+      <div>
+        <dt>区间 Total</dt>
+        <dd>{compactTokenFmt.format(periodTotal)}</dd>
+      </div>
+      <div>
+        <dt>峰值</dt>
+        <dd>{peak ? `${formatShortDate(peak.date)} · ${compactTokenFmt.format(peak.totalTokens)}` : '—'}</dd>
+      </div>
+      <div>
+        <dt>较前一日</dt>
+        <dd className={change > 0 ? 'is-up' : change < 0 ? 'is-down' : ''}>
+          {change === null ? '—' : `${change > 0 ? '+' : ''}${Math.round(change * 100)}%`}
+        </dd>
+      </div>
+    </dl>
+  );
+}
+
+function TrendAxisTick({ x, y, payload, axis, orientation, compact = false }) {
   const value = Number(payload?.value || 0);
   const { minimum, maximum } = axis.extrema;
   const isMinimum = areTrendValuesEqual(minimum?.value, value);
@@ -912,13 +979,40 @@ function TrendAxisTick({ x, y, payload, axis, orientation }) {
         textAnchor={orientation === 'right' ? 'start' : 'end'}
         fill={axis.color}
         fillOpacity={axis.opacity}
-        fontSize={12}
+        fontSize={compact ? 11 : 12}
         fontWeight={extremum ? 700 : 400}
       >
         {extremum ? axis.extremumFormatter(value) : axis.formatter(value)}
       </text>
     </g>
   );
+}
+
+function getDefaultTrendSeriesVisibility() {
+  const isMobileViewport = typeof window !== 'undefined'
+    && window.matchMedia('(max-width: 720px)').matches;
+  return Object.fromEntries(TREND_SERIES.map(({ key }) => [
+    key,
+    !isMobileViewport || key === 'totalTokens' || key === 'outputTokens',
+  ]));
+}
+
+function useMediaQuery(query) {
+  const [matches, setMatches] = useState(() => typeof window !== 'undefined' && window.matchMedia(query).matches);
+
+  useEffect(() => {
+    const mediaQuery = window.matchMedia(query);
+    const updateMatch = () => setMatches(mediaQuery.matches);
+    updateMatch();
+    mediaQuery.addEventListener('change', updateMatch);
+    return () => mediaQuery.removeEventListener('change', updateMatch);
+  }, [query]);
+
+  return matches;
+}
+
+function formatShortDate(value) {
+  return typeof value === 'string' && value.length >= 10 ? value.slice(5) : value;
 }
 
 function ExtremumGuide({ extremum, data }) {

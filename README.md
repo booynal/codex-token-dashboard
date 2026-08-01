@@ -36,9 +36,17 @@ It is intentionally a usage-analysis tool, not an OpenAI billing console. Cost f
 - The source filter can isolate `Codex Desktop` and `Codex CLI` sessions using the rollout `originator` field.
 - Compact token values use `K`, `M`, and `B`; KPI values stay on one line and preserve the full value in the hover title.
 - The daily trend has linked Total, Output, and Cost axes: Output uses the Total reference divided by 100 and Cost uses the Total reference per million tokens. The three primary series retain their actual high/low ticks and distinct curve markers; Cached shares the Total scale without separate extrema. Its `Total`, `Cached`, `Output`, and `Cost` legend entries can be toggled; hover a legend, axis, line, or extrema marker to focus that series and reveal its guide line. Tooltips include the weekday and full values.
-- Drag across the daily trend's plot area to show a translucent date range. Releasing the pointer fills the start/end filters and applies the selected range.
+- On desktop, drag across the daily trend's plot area to show a translucent date range. Releasing the pointer fills the start/end filters and applies the selected range.
 - The heatmap uses ten percentile-based active-usage levels and follows the dashboard's warm neutral palette. Hover a day to see its weekday, total, cache, output, and estimated cost. Before a quick-mode full scan, it represents only the loaded recent week.
 - Hover a project share to reveal its absolute path. Model shares expose their reasoning-effort grouping; reasoning-effort shares expose their model grouping.
+
+## Mobile Layout
+
+- At viewport widths up to `720px`, the filter controls are collapsed by default. Use the **筛选条件** button to expand them; the button also shows how many filter groups are active.
+- Mobile filters use a two-column layout, including reasoning effort and project on the same row. Each native control fills its grid column, and long project names remain selectable from the project menu.
+- KPI cards use a compact two-column grid so the primary daily metrics remain visible near the top of the page.
+- The daily trend prioritizes plot width on mobile: `Total` and `Output` are visible by default, secondary right-side axes are hidden, dates use the shorter `MM-DD` form, and exact values remain available from the tooltip and legend controls.
+- A compact trend summary shows the selected period's Total, peak day, and change from the previous day. Vertical touch scrolling remains enabled; date-range dragging stays desktop-only to avoid conflicting with one-finger page scrolling.
 
 ## Quick Start
 
