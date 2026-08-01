@@ -56,11 +56,15 @@ Run from npm:
 npx codex-token-dashboard
 ```
 
-Or run directly from GitHub:
+Or install directly from GitHub:
 
 ```bash
-npx github:Jack-Tsue/codex-token-dashboard
+npm install --global --install-links=true github:Jack-Tsue/codex-token-dashboard
+codex-token-dashboard
 ```
+
+`--install-links=true` ensures npm copies the prepared Git package instead of
+linking the command to its temporary clone.
 
 Or clone and run locally:
 
