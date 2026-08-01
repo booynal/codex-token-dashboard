@@ -4,6 +4,8 @@
 
 Codex Token Dashboard is for people and teams who use Codex across several projects and want a clear answer to three practical questions: where tokens are going, which work is expensive, and how usage changes from day to day. It reads the Codex logs already on your machine and turns them into an interactive local web dashboard. No account, cloud sync, database, or telemetry is required.
 
+This npm distribution is maintained from the [booynal fork](https://github.com/booynal/codex-token-dashboard) of the original [Jack-Tsue project](https://github.com/Jack-Tsue/codex-token-dashboard).
+
 It aggregates `last_token_usage` from `~/.codex` sessions and surfaces daily token, output, cache, and API-equivalent cost trends alongside a calendar heatmap, model/project/session breakdowns, reasoning-effort analysis, and high-signal usage highlights.
 
 ## Why Use It
@@ -50,26 +52,23 @@ It is intentionally a usage-analysis tool, not an OpenAI billing console. Cost f
 
 ## Quick Start
 
-Run from npm:
+Run the published fork from npm:
 
 ```bash
-npx codex-token-dashboard
+npx @booynal/codex-token-dashboard
 ```
 
-Or install directly from GitHub:
+Or install it globally:
 
 ```bash
-npm install --global --install-links=true github:Jack-Tsue/codex-token-dashboard
+npm install --global @booynal/codex-token-dashboard
 codex-token-dashboard
 ```
-
-`--install-links=true` ensures npm copies the prepared Git package instead of
-linking the command to its temporary clone.
 
 Or clone and run locally:
 
 ```bash
-git clone https://github.com/Jack-Tsue/codex-token-dashboard.git
+git clone https://github.com/booynal/codex-token-dashboard.git
 cd codex-token-dashboard
 npm install
 npm run build

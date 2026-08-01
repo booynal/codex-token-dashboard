@@ -1,6 +1,6 @@
 {
-  "name": "codex-token-dashboard",
-  "version": "1.0.4",
+  "name": "@booynal/codex-token-dashboard",
+  "version": "1.0.5",
   "description": "A local dashboard for visualizing Codex token usage from ~/.codex logs.",
   "license": "MIT",
   "type": "module",
@@ -22,12 +22,12 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Jack-Tsue/codex-token-dashboard.git"
+    "url": "git+https://github.com/booynal/codex-token-dashboard.git"
   },
   "bugs": {
-    "url": "https://github.com/Jack-Tsue/codex-token-dashboard/issues"
+    "url": "https://github.com/booynal/codex-token-dashboard/issues"
   },
-  "homepage": "https://github.com/Jack-Tsue/codex-token-dashboard#readme",
+  "homepage": "https://github.com/booynal/codex-token-dashboard#readme",
   "keywords": [
     "codex",
     "tokens",
@@ -37,6 +37,10 @@
   ],
   "engines": {
     "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
   },
   "scripts": {
     "dev": "concurrently \"node server/index.js\" \"vite --host 0.0.0.0\"",
