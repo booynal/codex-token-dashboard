@@ -88,6 +88,7 @@ export function createApp(options = {}) {
       state: 'scanning',
       recentStartDate,
       quickMode: config.quickMode,
+      progress: { processedFiles: 0, totalFiles: 0 },
     });
     console.log('Full-history scan started');
     setTimeout(() => {
@@ -98,12 +99,24 @@ export function createApp(options = {}) {
 
   async function completeFullScan(generation, recentStartDate) {
     try {
-      const fullResult = await scanUsage(config);
+      const fullResult = await scanUsage(config, {
+        onProgress: (progress) => {
+          if (generation !== scanGeneration || !cache) return;
+          cache = withScanStatus(cache, {
+            ...cache.scan,
+            state: 'scanning',
+            recentStartDate,
+            quickMode: config.quickMode,
+            progress,
+          });
+        },
+      });
       if (generation !== scanGeneration) return;
       cache = withScanStatus(fullResult, {
         state: 'complete',
         recentStartDate,
         quickMode: config.quickMode,
+        progress: { processedFiles: fullResult.fileCount, totalFiles: fullResult.fileCount },
       });
       console.log(formatScanLog('Full-history scan complete', fullResult));
     } catch (error) {
@@ -153,7 +166,7 @@ function normalizeConfig(options = {}) {
   };
 }
 
-async function scanUsage(config, { minDate = '' } = {}) {
+async function scanUsage(config, { minDate = '', onProgress } = {}) {
   const startedAt = new Date();
   const warnings = [];
   const events = [];
@@ -162,12 +175,19 @@ async function scanUsage(config, { minDate = '' } = {}) {
   const sessionNames = readSessionNames(config.codexDir, warnings);
   const workspaceLabels = readWorkspaceLabels(config.codexDir, warnings);
 
-  for (const source of sourceDirs) {
-    const rolloutFiles = listRolloutFiles(source.dir, warnings, minDate);
-    for (const file of rolloutFiles) {
-      const parsed = parseRolloutFile(file, source, warnings, sessionNames, workspaceLabels, minDate);
-      files.push(parsed.file);
-      events.push(...parsed.events);
+  const rolloutFiles = sourceDirs.flatMap((source) => listRolloutFiles(source.dir, warnings, minDate)
+    .map((file) => ({ file, source })));
+  onProgress?.({ processedFiles: 0, totalFiles: rolloutFiles.length });
+
+  for (let index = 0; index < rolloutFiles.length; index += 1) {
+    const { file, source } = rolloutFiles[index];
+    const parsed = parseRolloutFile(file, source, warnings, sessionNames, workspaceLabels, minDate);
+    files.push(parsed.file);
+    events.push(...parsed.events);
+    const processedFiles = index + 1;
+    if (processedFiles === rolloutFiles.length || processedFiles % 20 === 0) {
+      onProgress?.({ processedFiles, totalFiles: rolloutFiles.length });
+      await yieldToEventLoop();
     }
   }
 
@@ -185,6 +205,10 @@ async function scanUsage(config, { minDate = '' } = {}) {
     warnings,
     scanMs: new Date() - startedAt,
   };
+}
+
+function yieldToEventLoop() {
+  return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 function withScanStatus(result, scan) {

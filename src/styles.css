@@ -411,6 +411,14 @@ h1 {
   transform: scaleY(1.45);
 }
 
+.chart-legend-button.is-dimmed {
+  color: #aaa097;
+}
+
+.chart-legend-button.is-dimmed i {
+  opacity: .3;
+}
+
 .chart-legend-button:focus-visible {
   outline: 2px solid #9f4d36;
   outline-offset: 3px;
@@ -451,6 +459,24 @@ h1 {
 
 .trend-panel .recharts-surface {
   cursor: crosshair;
+}
+
+.trend-panel .trend-axis {
+  cursor: pointer;
+}
+
+.trend-axis-hit-zone {
+  position: absolute;
+  z-index: 6;
+  cursor: pointer;
+}
+
+.trend-axis-label-hit-zone {
+  z-index: 7;
+}
+
+.trend-extremum-hit-zone {
+  z-index: 8;
 }
 
 .compact-chart {
@@ -803,6 +829,93 @@ tr:last-child td {
   background: #f0f7ed;
   border-color: #cbdfc2;
   color: #45633f;
+}
+
+.scan-overlay {
+  position: fixed;
+  z-index: 20;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(49, 41, 33, .48);
+  backdrop-filter: blur(3px);
+}
+
+.scan-overlay-dialog {
+  width: min(460px, 100%);
+  border: 1px solid #d8cec0;
+  border-radius: 8px;
+  background: #fffaf2;
+  box-shadow: 0 24px 64px rgba(35, 27, 21, .28);
+  padding: 28px;
+  text-align: center;
+}
+
+.scan-overlay-icon {
+  width: 52px;
+  height: 52px;
+  margin: 0 auto 14px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  background: #f4e5d7;
+  color: #9f4d36;
+}
+
+.scan-overlay-dialog .eyebrow {
+  margin-bottom: 7px;
+}
+
+.scan-overlay-dialog h2 {
+  margin: 0;
+  color: #2d2722;
+  font-size: 24px;
+  line-height: 1.25;
+}
+
+.scan-overlay-dialog > p:not(.eyebrow) {
+  margin: 10px 0 20px;
+  color: #776d63;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.scan-progress {
+  display: grid;
+  gap: 10px;
+  text-align: left;
+}
+
+.scan-progress-track {
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #eee4d8;
+}
+
+.scan-progress-track span {
+  display: block;
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: #9f4d36;
+  transition: width .28s ease;
+}
+
+.scan-progress > div:last-child {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: baseline;
+  color: #776d63;
+  font-size: 12px;
+}
+
+.scan-progress strong {
+  color: #2d2722;
+  font-size: 16px;
+  font-variant-numeric: tabular-nums;
 }
 
 .warning-list {

@@ -7,9 +7,9 @@ import {
   BarChart,
   CartesianGrid,
   Cell,
-  Label,
   ReferenceDot,
   ReferenceArea,
+  ReferenceLine,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -98,22 +98,39 @@ const compactUsdFmt = new Intl.NumberFormat('en-US', {
   notation: 'compact',
   maximumFractionDigits: 1,
 });
-const usdAxisFmt = new Intl.NumberFormat('en-US', {
-  style: 'currency',
-  currency: 'USD',
-  maximumFractionDigits: 0,
-});
 const cnyFmt = new Intl.NumberFormat('zh-CN', {
   style: 'currency',
   currency: 'CNY',
   maximumFractionDigits: 2,
 });
 const HEAT_LEVEL_THRESHOLDS = [0.1, 0.2, 0.3, 0.4, 0.52, 0.65, 0.76, 0.86, 0.94];
+const TREND_COLORS = {
+  total: '#9f4d36',
+  cached: '#c96442',
+  output: '#3f6574',
+  cost: '#b98b45',
+};
+const TREND_AXIS_IDS = {
+  tokens: 'tokens',
+  output: 'right-1-output',
+  cost: 'right-2-cost',
+};
 const TREND_SERIES = [
-  { key: 'totalTokens', label: 'Total', color: '#9f4d36', fill: 'url(#tokenFill)', strokeWidth: 2.5, yAxisId: 'tokens' },
-  { key: 'cachedInputTokens', label: 'Cached', color: '#6d8b74', fill: 'transparent', strokeWidth: 1.8, yAxisId: 'tokens' },
-  { key: 'outputTokens', label: 'Output', color: '#3f6574', fill: 'transparent', strokeWidth: 1.8, yAxisId: 'output' },
-  { key: 'costUsd', label: 'Cost', color: '#b98b45', fill: 'url(#costFill)', strokeWidth: 2, yAxisId: 'cost', strokeDasharray: '4 4' },
+  { key: 'totalTokens', label: 'Total', color: TREND_COLORS.total, fill: 'url(#tokenFill)', strokeWidth: 2.5, yAxisId: TREND_AXIS_IDS.tokens },
+  { key: 'cachedInputTokens', label: 'Cached', color: TREND_COLORS.cached, fill: 'transparent', strokeWidth: 1.8, yAxisId: TREND_AXIS_IDS.tokens },
+  { key: 'outputTokens', label: 'Output', color: TREND_COLORS.output, fill: 'transparent', strokeWidth: 1.8, yAxisId: TREND_AXIS_IDS.output },
+  { key: 'costUsd', label: 'Cost', color: TREND_COLORS.cost, fill: 'url(#costFill)', strokeWidth: 2, yAxisId: TREND_AXIS_IDS.cost, strokeDasharray: '4 4' },
+];
+const TREND_AXIS_SERIES = {
+  tokens: ['totalTokens', 'cachedInputTokens'],
+  output: ['outputTokens'],
+  cost: ['costUsd'],
+};
+const TREND_MAGNITUDE_UNITS = [
+  { divisor: 1_000_000_000, suffix: 'B' },
+  { divisor: 1_000_000, suffix: 'M' },
+  { divisor: 1_000, suffix: 'K' },
+  { divisor: 1, suffix: '' },
 ];
 const REASONING_EFFORT_LABELS = {
   low: '低 (low)',
@@ -165,7 +182,7 @@ function App() {
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const data = await response.json();
       setRaw(data);
-      setFilters((current) => fillDefaultDateRange(current, data.events || []));
+      setFilters((current) => fillDefaultDateRange(current, data.events || [], data.scan));
     } catch (err) {
       setError(`读取 Codex 日志失败：${err.message}`);
     } finally {
@@ -183,7 +200,7 @@ function App() {
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const data = await response.json();
       setRaw(data);
-      setFilters((current) => fillDefaultDateRange(current, data.events || []));
+      setFilters((current) => fillDefaultDateRange(current, data.events || [], data.scan));
     } catch (err) {
       setError(`读取完整历史失败：${err.message}`);
     }
@@ -285,6 +302,8 @@ function App() {
         </Notice>
       )}
 
+      {raw?.scan?.state === 'scanning' && <ScanOverlay scan={raw.scan} />}
+
       {raw?.scan?.state === 'failed' && (
         <Notice tone="warn" icon={<AlertTriangle size={18} />}>
           <span>历史日志补全失败：{raw.scan.error}</span>
@@ -298,7 +317,7 @@ function App() {
           value={filters.source}
           onChange={(source) => setFilters({ ...filters, source })}
           options={[
-            ['all', '全部日志'],
+            ['all', '全部'],
             ['current', '当前日志'],
             ['archived', '归档日志'],
             ['desktop', 'Codex 桌面端'],
@@ -396,7 +415,7 @@ function App() {
       </section>
 
       <section className="main-grid">
-        <Panel className="trend-panel" title="每日趋势" meta="Token、Output 与估算金额">
+        <Panel className="trend-panel" title="每日趋势" meta="每日 Total Token、Output 与预估成本">
           <TrendChart
             data={analytics.days}
             visibleSeries={visibleTrendSeries}
@@ -406,7 +425,7 @@ function App() {
             onSelectDateRange={(range) => updateDateRange({ ...filters, ...range, datePreset: '' })}
           />
         </Panel>
-        <Panel title="用量热力图" meta="按 Asia/Shanghai 日期归属">
+        <Panel title="用量热力图" meta="按北京时间统计每日用量">
           {isFullScanPending && !isQuickMode
             ? <HistoryLoading />
             : <Heatmap data={allAnalytics.days} selectedStart={filters.startDate} selectedEnd={filters.endDate} />}
@@ -443,6 +462,36 @@ function Shell({ children }) {
       <div className="page-texture" />
       <div className="content">{children}</div>
     </main>
+  );
+}
+
+function ScanOverlay({ scan }) {
+  const progress = scan?.progress;
+  const totalFiles = progress?.totalFiles || 0;
+  const processedFiles = progress?.processedFiles || 0;
+  const percent = totalFiles ? Math.min(100, Math.round((processedFiles / totalFiles) * 100)) : 0;
+  const progressLabel = totalFiles
+    ? `已扫描 ${numberFmt.format(processedFiles)} / ${numberFmt.format(totalFiles)} 个日志文件`
+    : '正在整理待扫描的日志文件';
+
+  return (
+    <div className="scan-overlay" role="status" aria-live="polite" aria-label="正在扫描完整历史日志">
+      <section className="scan-overlay-dialog">
+        <div className="scan-overlay-icon"><RefreshCw size={26} className="spin" /></div>
+        <p className="eyebrow">历史数据扫描中</p>
+        <h2>正在扫描你的 codex 全量历史会话</h2>
+        <p>首次扫描完整历史可能需要一点时间，已加载的数据会在完成后自动更新。</p>
+        <div className="scan-progress" aria-label={progressLabel}>
+          <div className="scan-progress-track" aria-hidden="true">
+            <span style={{ width: `${percent}%` }} />
+          </div>
+          <div>
+            <strong>{totalFiles ? `${percent}%` : '准备中'}</strong>
+            <span>{progressLabel}</span>
+          </div>
+        </div>
+      </section>
+    </div>
   );
 }
 
@@ -568,23 +617,77 @@ function SettingsPanel({ prices, setPrices, fxRate, setFxRate }) {
 
 function TrendChart({ data, visibleSeries, onToggleSeries, hoveredSeries, onHoverSeries, onSelectDateRange }) {
   const [dateDrag, setDateDrag] = useState(null);
+  const [axisHitZones, setAxisHitZones] = useState([]);
+  const [hoveredExtremum, setHoveredExtremum] = useState(null);
   const chartSurfaceRef = useRef(null);
   const dateDragRef = useRef(null);
-  if (!data.length) return <EmptyState text="当前筛选条件下没有趋势数据" />;
-  const highest = maxBy(data, 'totalTokens');
-  const lowest = minBy(data, 'totalTokens');
-  const hasSingleExtremum = highest?.date === lowest?.date;
-  const hasTokenSeries = TREND_SERIES.some(({ key, yAxisId }) => yAxisId === 'tokens' && visibleSeries[key]);
-  const tokenAxisStyle = getTrendAxisStyle(['totalTokens', 'cachedInputTokens'], hoveredSeries, '#6f665c');
-  const costAxisStyle = getTrendAxisStyle(['costUsd'], hoveredSeries, '#8b7046');
-  const outputAxisStyle = getTrendAxisStyle(['outputTokens'], hoveredSeries, '#3f6574');
+  const hasTokenSeries = TREND_SERIES.some(({ key, yAxisId }) => yAxisId === TREND_AXIS_IDS.tokens && visibleSeries[key]);
+  const tokenAxisStyle = getTrendAxisStyle(TREND_AXIS_SERIES.tokens, hoveredSeries, TREND_COLORS.total);
+  const costAxisStyle = getTrendAxisStyle(TREND_AXIS_SERIES.cost, hoveredSeries, TREND_COLORS.cost, true);
+  const outputAxisStyle = getTrendAxisStyle(TREND_AXIS_SERIES.output, hoveredSeries, TREND_COLORS.output);
+  const totalAxisMaximum = getTrendReferenceMaximum(data);
+  // All three scales use the same Total-derived reference: Output is Total / 100;
+  // Cost is Total per million tokens, so K, M and B become 0.001x, 1x and 1,000x.
+  const tokenAxis = getTrendAxisConfig(data, 'totalTokens', totalAxisMaximum, false, TREND_COLORS.total, tokenAxisStyle.tick.fillOpacity);
+  const outputAxis = getTrendAxisConfig(data, 'outputTokens', totalAxisMaximum / 100, false, TREND_COLORS.output, outputAxisStyle.tick.fillOpacity);
+  const costAxis = getTrendAxisConfig(data, 'costUsd', totalAxisMaximum / 1_000_000, true, TREND_COLORS.cost, costAxisStyle.tick.fillOpacity);
+  const extremumMarkers = TREND_SERIES
+    .filter(({ key }) => key !== 'cachedInputTokens' && visibleSeries[key])
+    .map((series) => ({ series, extrema: getTrendExtrema(data, series.key) }));
   const renderedSeries = TREND_SERIES
     .filter(({ key }) => visibleSeries[key])
     .toSorted((left, right) => {
-      const leftPriority = left.key === hoveredSeries ? 2 : left.key === 'outputTokens' ? 1 : 0;
-      const rightPriority = right.key === hoveredSeries ? 2 : right.key === 'outputTokens' ? 1 : 0;
+      const leftPriority = hoveredSeries
+        ? (isTrendSeriesHighlighted(hoveredSeries, left.key) ? 2 : 0)
+        : left.key === 'outputTokens' ? 1 : 0;
+      const rightPriority = hoveredSeries
+        ? (isTrendSeriesHighlighted(hoveredSeries, right.key) ? 2 : 0)
+        : right.key === 'outputTokens' ? 1 : 0;
       return leftPriority - rightPriority;
     });
+
+  useEffect(() => {
+    const surface = chartSurfaceRef.current;
+    if (!surface) return undefined;
+
+    let frame = 0;
+    const measure = () => {
+      const nextZones = getTrendAxisHitZones(surface);
+      setAxisHitZones((currentZones) => areTrendAxisHitZonesEqual(currentZones, nextZones) ? currentZones : nextZones);
+    };
+    const scheduleMeasure = () => {
+      window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(measure);
+    };
+    const resizeObserver = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(scheduleMeasure);
+    resizeObserver?.observe(surface);
+    const svg = surface.querySelector('svg');
+    const mutationObserver = svg ? new MutationObserver(scheduleMeasure) : null;
+    mutationObserver?.observe(svg, { childList: true, subtree: true, attributes: true, attributeFilter: ['x1', 'x2', 'width', 'transform'] });
+    scheduleMeasure();
+    return () => {
+      window.cancelAnimationFrame(frame);
+      resizeObserver?.disconnect();
+      mutationObserver?.disconnect();
+    };
+  }, [data, visibleSeries.costUsd, visibleSeries.outputTokens]);
+
+  if (!data.length) return <EmptyState text="当前筛选条件下没有趋势数据" />;
+
+  function clearTrendHover() {
+    setHoveredExtremum(null);
+    onHoverSeries(null);
+  }
+
+  function activateTrendSeries(seriesKey) {
+    setHoveredExtremum(null);
+    onHoverSeries(seriesKey);
+  }
+
+  function activateExtremum(extremum) {
+    setHoveredExtremum(extremum);
+    onHoverSeries(extremum.seriesKey);
+  }
 
   function getPointerDate(event) {
     const surface = chartSurfaceRef.current;
@@ -637,8 +740,9 @@ function TrendChart({ data, visibleSeries, onToggleSeries, hoveredSeries, onHove
   }
 
   function updateDateDrag(event) {
+    if (!dateDragRef.current) return;
     const point = getPointerDate(event);
-    if (!dateDragRef.current || !point?.date) return;
+    if (!point?.date) return;
     const next = { ...dateDragRef.current, endDate: point.date, endX: point.x };
     dateDragRef.current = next;
     setDateDrag(next);
@@ -670,7 +774,7 @@ function TrendChart({ data, visibleSeries, onToggleSeries, hoveredSeries, onHove
   }
 
   return (
-    <div className="chart-frame" onMouseLeave={() => onHoverSeries(null)}>
+    <div className="chart-frame" onMouseLeave={clearTrendHover}>
       <div
         className="trend-chart-surface"
         ref={chartSurfaceRef}
@@ -683,19 +787,19 @@ function TrendChart({ data, visibleSeries, onToggleSeries, hoveredSeries, onHove
           <AreaChart data={data} margin={{ left: 4, right: 16, top: 34, bottom: 0 }}>
           <defs>
             <linearGradient id="tokenFill" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="#c96442" stopOpacity={0.42} />
-              <stop offset="100%" stopColor="#c96442" stopOpacity={0.04} />
+              <stop offset="0%" stopColor={TREND_COLORS.total} stopOpacity={0.42} />
+              <stop offset="100%" stopColor={TREND_COLORS.total} stopOpacity={0.04} />
             </linearGradient>
             <linearGradient id="costFill" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="#b98b45" stopOpacity={0.34} />
-              <stop offset="100%" stopColor="#b98b45" stopOpacity={0.02} />
+              <stop offset="0%" stopColor={TREND_COLORS.cost} stopOpacity={0.34} />
+              <stop offset="100%" stopColor={TREND_COLORS.cost} stopOpacity={0.02} />
             </linearGradient>
           </defs>
           <CartesianGrid stroke="#e4ddd2" vertical={false} />
           <XAxis dataKey="date" tick={{ fill: '#6f665c', fontSize: 12 }} tickMargin={10} />
-          {hasTokenSeries && <YAxis yAxisId="tokens" tickFormatter={(value) => compactTokenFmt.format(value)} width={56} {...tokenAxisStyle} />}
-          {visibleSeries.costUsd && <YAxis yAxisId="cost" orientation="right" tickFormatter={(value) => usdAxisFmt.format(value)} width={48} {...costAxisStyle} />}
-          {visibleSeries.outputTokens && <YAxis yAxisId="output" orientation="right" tickFormatter={(value) => compactTokenFmt.format(value)} width={56} {...outputAxisStyle} />}
+          {hasTokenSeries && <YAxis className="trend-axis trend-axis-tokens" yAxisId={TREND_AXIS_IDS.tokens} domain={tokenAxis.domain} ticks={tokenAxis.ticks} interval={0} allowDataOverflow width={56} {...tokenAxisStyle} tick={<TrendAxisTick axis={tokenAxis} orientation="left" />} />}
+          {visibleSeries.outputTokens && <YAxis className="trend-axis trend-axis-output" yAxisId={TREND_AXIS_IDS.output} domain={outputAxis.domain} ticks={outputAxis.ticks} interval={0} allowDataOverflow orientation="right" width={56} {...outputAxisStyle} tick={<TrendAxisTick axis={outputAxis} orientation="right" />} />}
+          {visibleSeries.costUsd && <YAxis className="trend-axis trend-axis-cost" yAxisId={TREND_AXIS_IDS.cost} domain={costAxis.domain} ticks={costAxis.ticks} interval={0} allowDataOverflow orientation="right" width={48} {...costAxisStyle} tick={<TrendAxisTick axis={costAxis} orientation="right" />} />}
           <Tooltip content={<ChartTooltip />} />
             {dateDrag && dateDrag.startDate !== dateDrag.endDate && (
               <ReferenceArea
@@ -709,7 +813,7 @@ function TrendChart({ data, visibleSeries, onToggleSeries, hoveredSeries, onHove
               />
             )}
           {renderedSeries.map((series) => {
-            const isDimmed = Boolean(hoveredSeries && hoveredSeries !== series.key);
+            const isDimmed = Boolean(hoveredSeries && !isTrendSeriesHighlighted(hoveredSeries, series.key));
             return (
               <Area
                 key={series.key}
@@ -723,23 +827,36 @@ function TrendChart({ data, visibleSeries, onToggleSeries, hoveredSeries, onHove
                 strokeDasharray={series.strokeDasharray}
                 strokeOpacity={isDimmed ? 0.12 : 1}
                 fillOpacity={isDimmed ? 0.04 : 1}
-                activeDot={{ r: 5, fill: series.color, onMouseEnter: () => onHoverSeries(series.key) }}
-                onMouseEnter={() => onHoverSeries(series.key)}
+                activeDot={{ r: 5, fill: series.color, onMouseEnter: () => activateTrendSeries(series.key) }}
+                onMouseEnter={() => activateTrendSeries(series.key)}
               />
             );
           })}
-          {visibleSeries.totalTokens && (!hoveredSeries || hoveredSeries === 'totalTokens') && highest && (
-            <ReferenceDot x={highest.date} y={highest.totalTokens} yAxisId="tokens" r={5} fill="#9f4d36" stroke="#fffdf8" strokeWidth={2}>
-              <Label value={`${hasSingleExtremum ? '最高/最低' : '最高'} ${compactTokenFmt.format(highest.totalTokens)}`} position="top" fill="#75402f" fontSize={12} fontWeight={700} />
-            </ReferenceDot>
-          )}
-          {visibleSeries.totalTokens && (!hoveredSeries || hoveredSeries === 'totalTokens') && !hasSingleExtremum && lowest && (
-            <ReferenceDot x={lowest.date} y={lowest.totalTokens} yAxisId="tokens" r={5} fill="#9f4d36" stroke="#fffdf8" strokeWidth={2}>
-              <Label value={`最低 ${compactTokenFmt.format(lowest.totalTokens)}`} position="top" fill="#75402f" fontSize={12} fontWeight={700} />
-            </ReferenceDot>
-          )}
+          {hoveredExtremum && <ExtremumGuide extremum={hoveredExtremum} data={data} />}
+          {extremumMarkers.map(({ series, extrema }) => (
+            <TrendExtremumMarkers
+              key={series.key}
+              series={series}
+              extrema={extrema}
+              isActive={hoveredExtremum?.seriesKey === series.key}
+              onActivate={activateExtremum}
+              onDeactivate={clearTrendHover}
+            />
+          ))}
           </AreaChart>
         </ResponsiveContainer>
+        {axisHitZones.map((zone) => (
+          <div
+            key={zone.id}
+            className={`trend-axis-hit-zone ${zone.axisLabel ? 'trend-axis-label-hit-zone' : ''} ${zone.extremum ? 'trend-extremum-hit-zone' : ''}`}
+            style={zone.style}
+            onPointerDown={(event) => event.stopPropagation()}
+            onPointerEnter={() => zone.extremum
+              ? activateExtremum(getTrendExtrema(data, zone.seriesKey)[zone.extremum === 'both' ? 'maximum' : zone.extremum])
+              : activateTrendSeries(zone.seriesKeys)}
+            onPointerLeave={clearTrendHover}
+          />
+        ))}
         {dateDrag && Math.abs(dateDrag.endX - dateDrag.startX) > 1 && (
           <div
             className="trend-date-selection"
@@ -752,15 +869,15 @@ function TrendChart({ data, visibleSeries, onToggleSeries, hoveredSeries, onHove
           />
         )}
       </div>
-      <div className="chart-legend" onMouseLeave={() => onHoverSeries(null)}>
+      <div className="chart-legend" onMouseLeave={clearTrendHover}>
         {TREND_SERIES.map((series) => (
           <button
-            className={`chart-legend-button ${visibleSeries[series.key] ? '' : 'is-hidden'} ${hoveredSeries === series.key ? 'is-highlighted' : ''}`}
+            className={`chart-legend-button ${visibleSeries[series.key] ? '' : 'is-hidden'} ${hoveredSeries && isTrendSeriesHighlighted(hoveredSeries, series.key) ? 'is-highlighted' : ''} ${hoveredSeries && !isTrendSeriesHighlighted(hoveredSeries, series.key) ? 'is-dimmed' : ''}`}
             key={series.key}
             type="button"
             aria-pressed={visibleSeries[series.key]}
             onClick={() => onToggleSeries(series.key)}
-            onMouseEnter={() => visibleSeries[series.key] && onHoverSeries(series.key)}
+            onMouseEnter={() => visibleSeries[series.key] && activateTrendSeries(series.key)}
             title={`${visibleSeries[series.key] ? '隐藏' : '显示'}${series.label}`}
           >
             <i className={series.strokeDasharray ? 'dash' : ''} style={series.strokeDasharray ? undefined : { background: series.color }} />
@@ -769,6 +886,87 @@ function TrendChart({ data, visibleSeries, onToggleSeries, hoveredSeries, onHove
         ))}
       </div>
     </div>
+  );
+}
+
+function TrendAxisTick({ x, y, payload, axis, orientation }) {
+  const value = Number(payload?.value || 0);
+  const { minimum, maximum } = axis.extrema;
+  const isMinimum = areTrendValuesEqual(minimum?.value, value);
+  const isMaximum = areTrendValuesEqual(maximum?.value, value);
+  const extremum = isMinimum || isMaximum;
+  const direction = orientation === 'right' ? 1 : -1;
+  const labelX = x + (direction * 8);
+
+  return (
+    <g
+      className={extremum ? 'trend-axis-extremum-tick' : 'trend-axis-regular-tick'}
+      data-trend-axis={axis.seriesKey}
+      data-extremum={extremum ? (isMinimum && isMaximum ? 'both' : isMaximum ? 'maximum' : 'minimum') : undefined}
+      data-series-key={extremum ? axis.seriesKey : undefined}
+    >
+      <text
+        x={labelX}
+        y={y}
+        dy="0.32em"
+        textAnchor={orientation === 'right' ? 'start' : 'end'}
+        fill={axis.color}
+        fillOpacity={axis.opacity}
+        fontSize={12}
+        fontWeight={extremum ? 700 : 400}
+      >
+        {extremum ? axis.extremumFormatter(value) : axis.formatter(value)}
+      </text>
+    </g>
+  );
+}
+
+function ExtremumGuide({ extremum, data }) {
+  const series = TREND_SERIES.find(({ key }) => key === extremum.seriesKey);
+  if (!series || !data.length) return null;
+  const axisStartsOnLeft = series.yAxisId === TREND_AXIS_IDS.tokens;
+  const boundaryDate = axisStartsOnLeft ? data[0].date : data.at(-1).date;
+  if (boundaryDate === extremum.date) return null;
+
+  return (
+    <ReferenceLine
+      yAxisId={series.yAxisId}
+      segment={[
+        { x: boundaryDate, y: extremum.value },
+        { x: extremum.date, y: extremum.value },
+      ]}
+      stroke={series.color}
+      strokeOpacity={0.72}
+      strokeDasharray="4 4"
+    />
+  );
+}
+
+function TrendExtremumMarkers({ series, extrema, isActive, onActivate, onDeactivate }) {
+  const { minimum, maximum } = extrema;
+  if (!minimum || !maximum) return null;
+  const combined = minimum.date === maximum.date && minimum.value === maximum.value;
+  const eventHandlers = (extremum) => ({
+    onMouseEnter: () => onActivate(extremum),
+    onMouseLeave: onDeactivate,
+  });
+
+  if (combined) {
+    return (
+      <>
+        <ReferenceDot x={maximum.date} y={maximum.value} yAxisId={series.yAxisId} r={10} fill={series.color} fillOpacity={isActive ? 0.25 : 0.16} stroke="none" pointerEvents="none" />
+        <ReferenceDot x={maximum.date} y={maximum.value} yAxisId={series.yAxisId} r={6} fill="#fffdf8" stroke={series.color} strokeWidth={2.5} {...eventHandlers(maximum)} />
+        <ReferenceDot x={maximum.date} y={maximum.value} yAxisId={series.yAxisId} r={3} fill={series.color} stroke="none" pointerEvents="none" />
+      </>
+    );
+  }
+
+  return (
+    <>
+      <ReferenceDot x={maximum.date} y={maximum.value} yAxisId={series.yAxisId} r={10} fill={series.color} fillOpacity={isActive ? 0.25 : 0.16} stroke="none" pointerEvents="none" />
+      <ReferenceDot x={maximum.date} y={maximum.value} yAxisId={series.yAxisId} r={6} fill={series.color} stroke="#fffdf8" strokeWidth={2.5} {...eventHandlers(maximum)} />
+      <ReferenceDot x={minimum.date} y={minimum.value} yAxisId={series.yAxisId} r={isActive ? 7 : 6} fill="#fffdf8" stroke={series.color} strokeWidth={2.5} {...eventHandlers(minimum)} />
+    </>
   );
 }
 
@@ -968,13 +1166,26 @@ function HistoryLoading() {
   );
 }
 
-function fillDefaultDateRange(current, events) {
-  if (current.startDate || current.endDate || !events.length) return current;
+function fillDefaultDateRange(current, events, scan) {
+  if (!events.length) return current;
+  if (current.datePreset === 'all') {
+    return scan?.state === 'complete'
+      ? { ...current, ...getEventDateRange(events) }
+      : current;
+  }
+  if (current.startDate || current.endDate) return current;
   return {
     ...current,
     datePreset: 'lastWeek',
     ...getDateRangePreset('lastWeek'),
   };
+}
+
+function getEventDateRange(events) {
+  return events.reduce((range, event) => ({
+    startDate: !range.startDate || event.date < range.startDate ? event.date : range.startDate,
+    endDate: !range.endDate || event.date > range.endDate ? event.date : range.endDate,
+  }), { startDate: '', endDate: '' });
 }
 
 function rangeExtendsBeyondRecentWeek(filters, scan) {
@@ -1028,9 +1239,9 @@ function getFilterOptions(events, projectLabels) {
     projectLabels.get(event.cwd || 'unknown') || event.projectName || projectNameFromPath(event.cwd || 'unknown'),
   ]))].sort((a, b) => a[1].localeCompare(b[1], 'zh-CN'));
   return {
-    models: [['all', '全部模型'], ...models.map((model) => [model, model])],
-    reasoningEfforts: [['all', '全部思考级别'], ...reasoningEfforts.map((effort) => [effort, reasoningEffortLabel(effort)])],
-    cwdList: [['all', '全部项目'], ...cwdList],
+    models: [['all', '全部'], ...models.map((model) => [model, model])],
+    reasoningEfforts: [['all', '全部'], ...reasoningEfforts.map((effort) => [effort, reasoningEffortLabel(effort)])],
+    cwdList: [['all', '全部'], ...cwdList],
   };
 }
 
@@ -1230,10 +1441,6 @@ function maxBy(rows, field) {
   return rows.reduce((best, row) => (!best || row[field] > best[field] ? row : best), null);
 }
 
-function minBy(rows, field) {
-  return rows.reduce((best, row) => (!best || row[field] < best[field] ? row : best), null);
-}
-
 function normalizeReasoningEffort(value) {
   const effort = String(value || '').toLowerCase();
   return REASONING_EFFORT_LABELS[effort] ? effort : 'unknown';
@@ -1266,14 +1473,215 @@ function sortModels(models) {
   return ordered;
 }
 
-function getTrendAxisStyle(seriesKeys, hoveredSeries, color) {
-  const isDimmed = Boolean(hoveredSeries && !seriesKeys.includes(hoveredSeries));
+function getTrendAxisStyle(seriesKeys, hoveredSeries, color, dashed = false) {
+  const isDimmed = Boolean(hoveredSeries && !seriesKeys.some((key) => isTrendSeriesHighlighted(hoveredSeries, key)));
   const opacity = isDimmed ? 0.16 : 1;
   return {
     tick: { fill: color, fillOpacity: opacity, fontSize: 12 },
-    axisLine: { stroke: color, strokeOpacity: opacity },
+    axisLine: { stroke: color, strokeOpacity: opacity, strokeDasharray: dashed ? '4 4' : undefined },
     tickLine: { stroke: color, strokeOpacity: opacity },
   };
+}
+
+function isTrendSeriesHighlighted(hoveredSeries, seriesKey) {
+  return !hoveredSeries
+    || (Array.isArray(hoveredSeries) ? hoveredSeries.includes(seriesKey) : hoveredSeries === seriesKey);
+}
+
+function getTrendAxisConfig(data, seriesKey, maximum, isCurrency, color, opacity) {
+  const values = data.map((row) => Math.max(0, Number(row[seriesKey] || 0)));
+  const safeMaximum = Math.max(maximum, 1);
+  const unit = getTrendMagnitudeUnit(safeMaximum);
+  const baseFractionDigits = getTrendAxisFractionDigits(safeMaximum / 4, unit.divisor);
+  const extrema = getTrendExtrema(data, seriesKey);
+  return {
+    seriesKey,
+    domain: [0, safeMaximum],
+    color,
+    opacity,
+    extrema,
+    // Keep the regular five reference ticks, then add the real data extrema.
+    // Cached is intentionally excluded because it shares the Total axis.
+    ticks: getTrendAxisTicks(safeMaximum, values),
+    formatter: (value) => formatTrendAxisValue(value, unit, isCurrency, baseFractionDigits),
+    extremumFormatter: (value) => formatTrendAxisValue(value, unit, isCurrency, baseFractionDigits + 1),
+  };
+}
+
+function getTrendReferenceMaximum(data) {
+  const totalMaximum = getTrendSeriesMaximum(data, 'totalTokens');
+  const outputAsTotal = getTrendSeriesMaximum(data, 'outputTokens') * 100;
+  const costAsTotal = getTrendSeriesMaximum(data, 'costUsd') * 1_000_000;
+  return getNiceAxisMaximum(Math.max(totalMaximum, outputAsTotal, costAsTotal));
+}
+
+function getTrendSeriesMaximum(data, seriesKey) {
+  return Math.max(0, ...data.map((row) => Math.max(0, Number(row[seriesKey] || 0))));
+}
+
+function getTrendExtrema(data, seriesKey) {
+  return data.reduce((extrema, row) => {
+    const value = Math.max(0, Number(row[seriesKey] || 0));
+    const point = { date: row.date, value, seriesKey };
+    return {
+      minimum: !extrema.minimum || value < extrema.minimum.value ? point : extrema.minimum,
+      maximum: !extrema.maximum || value > extrema.maximum.value ? point : extrema.maximum,
+    };
+  }, { minimum: null, maximum: null });
+}
+
+function getNiceAxisMaximum(value) {
+  if (!value) return 1;
+  const magnitude = 10 ** Math.floor(Math.log10(value));
+  const normalized = value / magnitude;
+  const step = [1, 1.25, 1.5, 2, 2.5, 5, 10].find((candidate) => normalized <= candidate) || 10;
+  return step * magnitude;
+}
+
+function getTrendMagnitudeUnit(maximum) {
+  return TREND_MAGNITUDE_UNITS.find(({ divisor }) => maximum >= divisor) || TREND_MAGNITUDE_UNITS.at(-1);
+}
+
+function getTrendAxisTicks(maximum, values) {
+  const regularTicks = Array.from({ length: 5 }, (_, index) => (maximum * index) / 4);
+  const actualMinimum = Math.min(...values);
+  const actualMaximum = Math.max(...values);
+  return [...new Set([...regularTicks, actualMinimum, actualMaximum])]
+    .filter((value) => value >= 0 && value <= maximum)
+    .sort((left, right) => left - right);
+}
+
+function getTrendAxisFractionDigits(step, divisor) {
+  const normalized = Math.abs(step / divisor);
+  for (let digits = 0; digits <= 3; digits += 1) {
+    if (Number.isInteger(normalized * (10 ** digits))) return digits;
+  }
+  return 3;
+}
+
+function formatTrendAxisValue(value, unit, isCurrency, maximumFractionDigits = 4) {
+  const absoluteValue = Math.abs(Number(value || 0));
+  const scaled = absoluteValue / unit.divisor;
+  if (scaled === 0) return isCurrency ? '$0' : '0';
+
+  const formatted = new Intl.NumberFormat('en-US', {
+    maximumFractionDigits,
+  }).format(Number(value || 0) / unit.divisor);
+  return `${isCurrency ? '$' : ''}${formatted}${unit.suffix}`;
+}
+
+function areTrendValuesEqual(left, right) {
+  if (!Number.isFinite(left) || !Number.isFinite(right)) return false;
+  return Math.abs(left - right) <= Math.max(1, Math.abs(left), Math.abs(right)) * 1e-10;
+}
+
+function getTrendAxisHitZones(surface) {
+  const svg = surface.querySelector('svg');
+  const plot = svg?.querySelector('defs > clipPath > rect');
+  const surfaceBounds = surface.getBoundingClientRect();
+  const svgBounds = svg?.getBoundingClientRect();
+  const viewBox = svg?.viewBox?.baseVal;
+  if (!svg || !plot || !svgBounds || !viewBox?.width || !viewBox.height || !surfaceBounds.width) return [];
+
+  const plotX = Number(plot.getAttribute('x'));
+  const plotY = Number(plot.getAttribute('y'));
+  const plotWidth = Number(plot.getAttribute('width'));
+  const plotHeight = Number(plot.getAttribute('height'));
+  if (![plotX, plotY, plotWidth, plotHeight].every(Number.isFinite) || !plotWidth || !plotHeight) return [];
+
+  const scaleX = svgBounds.width / viewBox.width;
+  const scaleY = svgBounds.height / viewBox.height;
+  const plotLeft = svgBounds.left - surfaceBounds.left + ((plotX - viewBox.x) * scaleX);
+  const plotRight = plotLeft + (plotWidth * scaleX);
+  const top = svgBounds.top - surfaceBounds.top + ((plotY - viewBox.y) * scaleY);
+  const height = plotHeight * scaleY;
+  const surfaceRight = Math.min(surfaceBounds.width, svgBounds.right - surfaceBounds.left);
+  const axisX = (axisClassName) => {
+    const line = svg.querySelector(`.${axisClassName} .recharts-cartesian-axis-line`);
+    const x1 = Number(line?.getAttribute('x1'));
+    if (!line || !Number.isFinite(x1)) return null;
+    return svgBounds.left - surfaceBounds.left + ((x1 - viewBox.x) * scaleX);
+  };
+  const outputAxisX = axisX('trend-axis-output');
+  const costAxisX = axisX('trend-axis-cost');
+  const zones = [];
+
+  const addZone = (id, seriesKeys, left, right) => {
+    const clampedLeft = Math.max(0, Math.min(surfaceRight, left));
+    const clampedRight = Math.max(clampedLeft, Math.min(surfaceRight, right));
+    if (clampedRight - clampedLeft < 1) return;
+    zones.push({
+      id,
+      seriesKeys,
+      style: {
+        left: `${clampedLeft}px`,
+        top: `${Math.max(0, top)}px`,
+        width: `${clampedRight - clampedLeft}px`,
+        height: `${Math.min(height, surfaceBounds.height - Math.max(0, top))}px`,
+      },
+    });
+  };
+
+  const axisInset = 14;
+  if (outputAxisX !== null && costAxisX !== null) {
+    // Output labels are rendered to the right of their line. The Cost target
+    // begins beside its own line so it cannot take over a long Output label.
+    const divider = Math.max(plotRight - axisInset, costAxisX - 4);
+    addZone('output', TREND_AXIS_SERIES.output, plotRight - axisInset, divider);
+    addZone('cost', TREND_AXIS_SERIES.cost, divider, surfaceRight);
+  } else if (outputAxisX !== null) {
+    addZone('output', TREND_AXIS_SERIES.output, plotRight - axisInset, surfaceRight);
+  } else if (costAxisX !== null) {
+    addZone('cost', TREND_AXIS_SERIES.cost, plotRight - axisInset, surfaceRight);
+  }
+
+  const tokenAxisX = axisX('trend-axis-tokens');
+  if (tokenAxisX !== null) addZone('tokens', TREND_AXIS_SERIES.tokens, 0, plotLeft + axisInset);
+
+  svg.querySelectorAll('[data-trend-axis]').forEach((tick, index) => {
+    const bounds = tick.getBoundingClientRect();
+    const seriesKey = tick.getAttribute('data-trend-axis');
+    if (!seriesKey || !bounds.width || !bounds.height) return;
+    zones.push({
+      id: `axis-label-${seriesKey}-${index}`,
+      seriesKeys: [seriesKey],
+      axisLabel: true,
+      style: {
+        left: `${Math.max(0, bounds.left - surfaceBounds.left - 4)}px`,
+        top: `${Math.max(0, bounds.top - surfaceBounds.top - 4)}px`,
+        width: `${Math.min(surfaceBounds.width, bounds.width + 8)}px`,
+        height: `${bounds.height + 8}px`,
+      },
+    });
+  });
+
+  svg.querySelectorAll('.trend-axis-extremum-tick').forEach((tick) => {
+    const bounds = tick.getBoundingClientRect();
+    const seriesKey = tick.getAttribute('data-series-key');
+    const extremum = tick.getAttribute('data-extremum');
+    if (!seriesKey || !extremum || !bounds.width || !bounds.height) return;
+    zones.push({
+      id: `extremum-${seriesKey}-${extremum}`,
+      seriesKey,
+      extremum,
+      style: {
+        left: `${Math.max(0, bounds.left - surfaceBounds.left - 4)}px`,
+        top: `${Math.max(0, bounds.top - surfaceBounds.top - 4)}px`,
+        width: `${Math.min(surfaceBounds.width, bounds.width + 8)}px`,
+        height: `${bounds.height + 8}px`,
+      },
+    });
+  });
+  return zones;
+}
+
+function areTrendAxisHitZonesEqual(currentZones, nextZones) {
+  return currentZones.length === nextZones.length
+    && currentZones.every((zone, index) => zone.id === nextZones[index].id
+      && zone.style.left === nextZones[index].style.left
+      && zone.style.width === nextZones[index].style.width
+      && zone.style.top === nextZones[index].style.top
+      && zone.style.height === nextZones[index].style.height);
 }
 
 function formatTooltipValue(dataKey, value) {
