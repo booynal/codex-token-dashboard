@@ -27,6 +27,24 @@ import {
 import './styles.css';
 
 const DEFAULT_PRICES = {
+  gpt56Sol: {
+    label: 'GPT-5.6 Sol',
+    input: 5,
+    cached: 0.5,
+    output: 30,
+  },
+  gpt56Terra: {
+    label: 'GPT-5.6 Terra',
+    input: 2,
+    cached: 0.2,
+    output: 12,
+  },
+  gpt56Luna: {
+    label: 'GPT-5.6 Luna',
+    input: 0.2,
+    cached: 0.02,
+    output: 1.2,
+  },
   gpt55: {
     label: 'GPT-5.5',
     input: 5,
@@ -48,6 +66,10 @@ const DEFAULT_PRICES = {
 };
 
 const MODEL_MAP = {
+  'gpt-5.6': 'gpt56Sol',
+  'gpt-5.6-sol': 'gpt56Sol',
+  'gpt-5.6-terra': 'gpt56Terra',
+  'gpt-5.6-luna': 'gpt56Luna',
   'gpt-5.5': 'gpt55',
   'gpt-5.4': 'gpt54',
   'gpt-5.2': 'gpt54',
@@ -88,6 +110,7 @@ function App() {
     cwd: 'all',
     startDate: '',
     endDate: '',
+    datePreset: '',
   });
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [prices, setPrices] = useState(DEFAULT_PRICES);
@@ -117,16 +140,23 @@ function App() {
   }
 
   const events = useMemo(() => raw?.events || [], [raw]);
-  const filterOptions = useMemo(() => getFilterOptions(events), [events]);
+  const projectLabels = useMemo(() => getProjectDisplayNames(events), [events]);
+  const filterOptions = useMemo(
+    () => getFilterOptions(events, projectLabels),
+    [events, projectLabels]
+  );
   const filteredEvents = useMemo(
     () => applyFilters(events, filters),
     [events, filters]
   );
   const analytics = useMemo(
-    () => buildAnalytics(filteredEvents, prices),
-    [filteredEvents, prices]
+    () => buildAnalytics(filteredEvents, prices, projectLabels),
+    [filteredEvents, prices, projectLabels]
   );
-  const allAnalytics = useMemo(() => buildAnalytics(events, prices), [events, prices]);
+  const allAnalytics = useMemo(
+    () => buildAnalytics(events, prices, projectLabels),
+    [events, prices, projectLabels]
+  );
 
   if (loading) {
     return (
@@ -192,12 +222,20 @@ function App() {
         <DateField
           label="开始"
           value={filters.startDate}
-          onChange={(startDate) => setFilters({ ...filters, startDate })}
+          onChange={(startDate) => setFilters({ ...filters, startDate, datePreset: '' })}
         />
         <DateField
           label="结束"
           value={filters.endDate}
-          onChange={(endDate) => setFilters({ ...filters, endDate })}
+          onChange={(endDate) => setFilters({ ...filters, endDate, datePreset: '' })}
+        />
+        <DatePresetField
+          value={filters.datePreset}
+          onChange={(datePreset) => setFilters((current) => ({
+            ...current,
+            datePreset,
+            ...getDateRangePreset(datePreset),
+          }))}
         />
       </section>
 
@@ -339,6 +377,31 @@ function DateField({ label, value, onChange }) {
   );
 }
 
+function DatePresetField({ value, onChange }) {
+  return (
+    <label className="field date-preset-field">
+      <span>快捷范围</span>
+      <select value={value} onChange={(event) => onChange(event.target.value)}>
+        <option value="">自定义日期</option>
+        <optgroup label="日历范围">
+          <option value="today">今日</option>
+          <option value="thisWeek">本周</option>
+          <option value="thisMonth">本月</option>
+          <option value="thisYear">本年</option>
+        </optgroup>
+        <optgroup label="滚动范围">
+          <option value="lastWeek">近一周</option>
+          <option value="lastHalfMonth">近半月</option>
+          <option value="lastMonth">近一月</option>
+          <option value="lastQuarter">近三月</option>
+          <option value="lastHalfYear">近半年</option>
+          <option value="lastYear">近一年</option>
+        </optgroup>
+      </select>
+    </label>
+  );
+}
+
 function SettingsPanel({ prices, setPrices, fxRate, setFxRate }) {
   function updatePrice(group, field, value) {
     setPrices({
@@ -369,6 +432,9 @@ function SettingsPanel({ prices, setPrices, fxRate, setFxRate }) {
         ))}
         <div className="price-box mapping-box">
           <strong>模型映射</strong>
+          <p>gpt-5.6 / gpt-5.6-sol → GPT-5.6 Sol</p>
+          <p>gpt-5.6-terra → GPT-5.6 Terra</p>
+          <p>gpt-5.6-luna → GPT-5.6 Luna</p>
           <p>gpt-5.5 → GPT-5.5</p>
           <p>gpt-5.4 / gpt-5.2 / codex-auto-review → GPT-5.4</p>
           <p>gpt-5.1-codex-mini / gpt-5.4-mini → GPT-5.4 mini</p>
@@ -458,7 +524,7 @@ function ChartTooltip({ active, payload, label }) {
 function Heatmap({ data, selectedStart, selectedEnd }) {
   if (!data.length) return <EmptyState text="没有可展示的热力图数据" />;
   const { cells, months, startDate, endDate } = buildHeatmapCells(data);
-  const max = Math.max(...data.map((day) => day.totalTokens), 1);
+  const heatLevels = buildHeatLevels(cells);
   return (
     <div className="heatmap-wrap">
       <div className="heatmap-months" style={{ '--weeks': cells.length / 7 }}>
@@ -485,8 +551,7 @@ function Heatmap({ data, selectedStart, selectedEnd }) {
           {cells.map((cell) => (
             <div
               key={cell.date}
-              className={`heat-cell ${isDateInRange(cell.date, selectedStart, selectedEnd) ? 'selected' : ''}`}
-              style={{ '--heat': heatLevel(cell.totalTokens, max) }}
+              className={`heat-cell heat-${heatLevels.get(cell.date) || 0} ${isDateInRange(cell.date, selectedStart, selectedEnd) ? 'selected' : ''}`}
               title={`${cell.date}: ${numberFmt.format(cell.totalTokens)} tokens`}
             />
           ))}
@@ -496,8 +561,8 @@ function Heatmap({ data, selectedStart, selectedEnd }) {
         <span>{startDate} 至 {endDate}</span>
         <div className="heatmap-legend">
           <span>少</span>
-          {[0, 0.25, 0.5, 0.75, 1].map((level) => (
-            <i key={level} style={{ '--heat': level }} />
+          {[0, 1, 2, 3, 4, 5].map((level) => (
+            <i key={level} className={`heat-${level}`} />
           ))}
           <span>多</span>
         </div>
@@ -551,7 +616,7 @@ function ScanStatus({ raw, analytics }) {
         <span>扫描耗时 {raw?.scanMs || 0}ms，生成于 {formatTime(raw?.generatedAt)}。</span>
       </div>
       <Notice tone={warnings.length ? 'warn' : 'ok'} icon={warnings.length ? <AlertTriangle size={17} /> : <Sparkles size={17} />}>
-        {warnings.length ? `${warnings.length} 条解析提示，已跳过异常行。` : '日志解析正常，没有发现异常行。'}
+        {warnings.length ? `${warnings.length} 条扫描提示，请查看详情。` : '日志解析正常，没有发现异常行。'}
       </Notice>
       {warnings.length > 0 && (
         <div className="warning-list">
@@ -578,11 +643,43 @@ function fillDefaultDateRange(current, events) {
   };
 }
 
-function getFilterOptions(events) {
+function getDateRangePreset(preset) {
+  if (!preset) return {};
+  const end = parseDate(shanghaiToday());
+  const start = new Date(end);
+
+  if (preset === 'thisWeek') {
+    start.setUTCDate(start.getUTCDate() - ((start.getUTCDay() + 6) % 7));
+  } else if (preset === 'thisMonth') {
+    start.setUTCDate(1);
+  } else if (preset === 'thisYear') {
+    start.setUTCMonth(0, 1);
+  } else if (preset === 'lastWeek') {
+    start.setUTCDate(start.getUTCDate() - 6);
+  } else if (preset === 'lastHalfMonth') {
+    start.setUTCDate(start.getUTCDate() - 14);
+  } else if (preset === 'lastMonth') {
+    shiftDateMonths(start, -1);
+    start.setUTCDate(start.getUTCDate() + 1);
+  } else if (preset === 'lastQuarter') {
+    shiftDateMonths(start, -3);
+    start.setUTCDate(start.getUTCDate() + 1);
+  } else if (preset === 'lastHalfYear') {
+    shiftDateMonths(start, -6);
+    start.setUTCDate(start.getUTCDate() + 1);
+  } else if (preset === 'lastYear') {
+    shiftDateMonths(start, -12);
+    start.setUTCDate(start.getUTCDate() + 1);
+  }
+
+  return { startDate: formatDate(start), endDate: formatDate(end) };
+}
+
+function getFilterOptions(events, projectLabels) {
   const models = [...new Set(events.map((event) => event.model || 'unknown'))].sort();
   const cwdList = [...new Map(events.map((event) => [
     event.cwd || 'unknown',
-    event.projectName || projectNameFromPath(event.cwd || 'unknown'),
+    projectLabels.get(event.cwd || 'unknown') || event.projectName || projectNameFromPath(event.cwd || 'unknown'),
   ]))].sort((a, b) => a[1].localeCompare(b[1], 'zh-CN'));
   return {
     models: [['all', '全部模型'], ...models.map((model) => [model, model])],
@@ -594,14 +691,14 @@ function applyFilters(events, filters) {
   return events.filter((event) => {
     if (filters.source !== 'all' && event.source !== filters.source) return false;
     if (filters.model !== 'all' && event.model !== filters.model) return false;
-    if (filters.cwd !== 'all' && event.cwd !== filters.cwd) return false;
+    if (filters.cwd !== 'all' && (event.cwd || 'unknown') !== filters.cwd) return false;
     if (filters.startDate && event.date < filters.startDate) return false;
     if (filters.endDate && event.date > filters.endDate) return false;
     return true;
   });
 }
 
-function buildAnalytics(events, prices) {
+function buildAnalytics(events, prices, projectLabels) {
   const today = shanghaiToday();
   const daily = new Map();
   const models = new Map();
@@ -614,15 +711,17 @@ function buildAnalytics(events, prices) {
     addTo(total, event, costUsd);
     addToMap(daily, event.date, event, costUsd, { date: event.date });
     addToMap(models, event.model, event, costUsd, { model: event.model });
-    addToMap(projects, event.cwd, event, costUsd, {
-      cwd: event.cwd,
-      projectName: event.projectName || projectNameFromPath(event.cwd),
+    const cwd = event.cwd || 'unknown';
+    const projectName = projectLabels.get(cwd) || event.projectName || projectNameFromPath(cwd);
+    addToMap(projects, cwd, event, costUsd, {
+      cwd,
+      projectName,
     });
     addToMap(sessions, event.sessionId, event, costUsd, {
       sessionId: event.sessionId,
       sessionName: event.sessionName || shortSession(event.sessionId),
-      cwd: event.cwd,
-      projectName: event.projectName || projectNameFromPath(event.cwd),
+      cwd,
+      projectName,
       model: event.model,
     });
   }
@@ -803,9 +902,20 @@ function buildMonthLabels(cells) {
   return labels;
 }
 
-function heatLevel(value, max) {
-  if (!value) return 0;
-  return Math.max(0.14, Math.log1p(value) / Math.log1p(max));
+function buildHeatLevels(cells) {
+  const values = [...new Set(cells.map((cell) => cell.totalTokens).filter(Boolean))].sort((a, b) => a - b);
+  const levels = new Map();
+
+  for (const cell of cells) {
+    if (!cell.totalTokens) {
+      levels.set(cell.date, 0);
+      continue;
+    }
+    const rank = values.findLastIndex((value) => value <= cell.totalTokens) + 1;
+    levels.set(cell.date, Math.max(1, Math.ceil((rank / values.length) * 5)));
+  }
+
+  return levels;
 }
 
 function isDateInRange(date, start, end) {
@@ -818,6 +928,51 @@ function projectNameFromPath(value = '') {
   if (!value || value === 'unknown') return 'unknown';
   const parts = value.replace(/\/+$/, '').split('/').filter(Boolean);
   return parts.at(-1) || value;
+}
+
+function getProjectDisplayNames(events) {
+  const projects = new Map();
+  for (const event of events) {
+    const cwd = event.cwd || 'unknown';
+    if (!projects.has(cwd)) {
+      projects.set(cwd, event.projectName || projectNameFromPath(cwd));
+    }
+  }
+
+  const names = new Map();
+  for (const [cwd, projectName] of projects) {
+    const group = names.get(projectName) || [];
+    group.push(cwd);
+    names.set(projectName, group);
+  }
+
+  return new Map([...projects].map(([cwd, projectName]) => {
+    const duplicate = names.get(projectName)?.length > 1;
+    return [cwd, duplicate ? `${parentNameFromPath(cwd)}/${projectName}` : projectName];
+  }));
+}
+
+function parentNameFromPath(value = '') {
+  if (!value || value === 'unknown') return 'unknown';
+  const parts = value.replace(/\/+$/, '').split('/').filter(Boolean);
+  return parts.at(-2) || parts.at(-1) || value;
+}
+
+function parseDate(value) {
+  const [year, month, day] = value.split('-').map(Number);
+  return new Date(Date.UTC(year, month - 1, day));
+}
+
+function formatDate(date) {
+  return date.toISOString().slice(0, 10);
+}
+
+function shiftDateMonths(date, amount) {
+  const day = date.getUTCDate();
+  date.setUTCDate(1);
+  date.setUTCMonth(date.getUTCMonth() + amount);
+  const lastDay = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0)).getUTCDate();
+  date.setUTCDate(Math.min(day, lastDay));
 }
 
 function shortSession(value = '') {

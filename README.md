@@ -100,6 +100,9 @@ Reasoning output tokens are displayed as a detail and are not added a second tim
 
 Internal Codex model names are mapped to public GPT pricing buckets in the UI settings:
 
+- `gpt-5.6`, `gpt-5.6-sol` -> GPT-5.6 Sol
+- `gpt-5.6-terra` -> GPT-5.6 Terra
+- `gpt-5.6-luna` -> GPT-5.6 Luna
 - `gpt-5.5` -> GPT-5.5
 - `gpt-5.4`, `gpt-5.2`, `codex-auto-review` -> GPT-5.4
 - `gpt-5.4-mini`, `gpt-5.1-codex-mini` -> GPT-5.4 mini

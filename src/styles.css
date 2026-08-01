@@ -70,8 +70,9 @@ select {
 h1,
 h2,
 .kpi-card strong {
-  font-family: ui-serif, Georgia, "Times New Roman", serif;
+  font-family: inherit;
   letter-spacing: 0;
+  font-variant-numeric: tabular-nums;
 }
 
 h1 {
@@ -151,7 +152,7 @@ h1 {
 
 .filter-strip {
   display: grid;
-  grid-template-columns: 150px minmax(160px, 1fr) minmax(250px, 1.4fr) 150px 150px;
+  grid-template-columns: 150px minmax(160px, 1fr) minmax(250px, 1.4fr) minmax(160px, .8fr) 150px 150px;
   gap: 10px;
   padding: 12px;
   border-radius: 10px;
@@ -429,7 +430,7 @@ h1 {
   grid-auto-flow: column;
   grid-auto-columns: minmax(0, 1fr);
   grid-template-rows: repeat(7, minmax(0, 1fr));
-  gap: 4px;
+  gap: 1px;
   width: 100%;
   min-width: 0;
   height: 214px;
@@ -437,14 +438,16 @@ h1 {
 
 .heat-cell,
 .heatmap-legend i {
-  background: color-mix(in srgb, #9f4d36 calc(var(--heat) * 100%), #eee4d8);
-  border: 1px solid rgba(91, 69, 52, .08);
-  border-radius: 3px;
+  border: 0;
+  border-radius: 0;
 }
 
-.heat-cell.selected {
-  outline: 1px solid rgba(47, 41, 36, .18);
-}
+.heat-0 { background: #eee4d8; }
+.heat-1 { background: #ead2bf; }
+.heat-2 { background: #dfb18a; }
+.heat-3 { background: #ce7c52; }
+.heat-4 { background: #ad5039; }
+.heat-5 { background: #7f3029; }
 
 .heatmap-footer {
   display: flex;
@@ -502,11 +505,12 @@ h1 {
 
 .highlight-card strong {
   color: #2d2722;
-  font-family: ui-serif, Georgia, "Times New Roman", serif;
+  font-family: inherit;
   font-size: 28px;
   line-height: 1.05;
   margin: 10px 0 8px;
   overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
 }
 
 .highlight-card p {
