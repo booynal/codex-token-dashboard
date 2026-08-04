@@ -1,6 +1,6 @@
 {
   "name": "@booynal/codex-token-dashboard",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "description": "A local dashboard for visualizing Codex token usage from ~/.codex logs.",
   "license": "MIT",
   "type": "module",
@@ -48,7 +48,6 @@
     "start": "node bin/codex-token-dashboard.js",
     "preview": "npm run build && node bin/codex-token-dashboard.js --no-open",
     "lint": "eslint .",
-    "prepare": "npm run build",
     "prepublishOnly": "node scripts/build.js --require-vite"
   },
   "dependencies": {
