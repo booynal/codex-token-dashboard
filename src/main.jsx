@@ -150,6 +150,33 @@ const FIXED_MODEL_ORDER = [
   'gpt-5.4',
   'gpt-5.4-mini',
 ];
+const DATE_PRESET_GROUPS = [
+  {
+    label: '日历范围',
+    options: [
+      ['today', '今日'],
+      ['thisWeek', '本周'],
+      ['thisMonth', '本月'],
+      ['thisYear', '本年'],
+      ['all', '全部'],
+      ['', '自定义'],
+    ],
+  },
+  {
+    label: '滚动范围',
+    options: [
+      ['lastWeek', '近一周'],
+      ['lastHalfMonth', '近半月'],
+      ['lastMonth', '近一月'],
+      ['lastQuarter', '近三月'],
+      ['lastHalfYear', '近半年'],
+      ['lastYear', '近一年'],
+    ],
+  },
+];
+const DATE_PRESET_LABELS = Object.fromEntries(
+  DATE_PRESET_GROUPS.flatMap(({ options }) => options)
+);
 
 function App() {
   const [raw, setRaw] = useState(null);
@@ -574,28 +601,66 @@ function DateField({ label, value, onChange }) {
 }
 
 function DatePresetField({ value, onChange }) {
+  const [open, setOpen] = useState(false);
+  const fieldRef = useRef(null);
+
+  useEffect(() => {
+    if (!open) return undefined;
+
+    const closeOnOutsidePress = (event) => {
+      if (!fieldRef.current?.contains(event.target)) setOpen(false);
+    };
+    const closeOnEscape = (event) => {
+      if (event.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('pointerdown', closeOnOutsidePress);
+    document.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.removeEventListener('pointerdown', closeOnOutsidePress);
+      document.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [open]);
+
   return (
-    <label className="field date-preset-field">
+    <div className="field date-preset-field" ref={fieldRef}>
       <span>快捷范围</span>
-      <select value={value} onChange={(event) => onChange(event.target.value)}>
-        <option value="">自定义日期</option>
-        <optgroup label="日历范围">
-          <option value="all">全部</option>
-          <option value="today">今日</option>
-          <option value="thisWeek">本周</option>
-          <option value="thisMonth">本月</option>
-          <option value="thisYear">本年</option>
-        </optgroup>
-        <optgroup label="滚动范围">
-          <option value="lastWeek">近一周</option>
-          <option value="lastHalfMonth">近半月</option>
-          <option value="lastMonth">近一月</option>
-          <option value="lastQuarter">近三月</option>
-          <option value="lastHalfYear">近半年</option>
-          <option value="lastYear">近一年</option>
-        </optgroup>
-      </select>
-    </label>
+      <button
+        className="date-preset-trigger"
+        type="button"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((current) => !current)}
+      >
+        {DATE_PRESET_LABELS[value] || '自定义'}
+        <ChevronDown size={16} aria-hidden="true" />
+      </button>
+      {open && (
+        <div className="date-preset-menu" role="menu" aria-label="快捷范围">
+          {DATE_PRESET_GROUPS.map((group) => (
+            <section className="date-preset-group" key={group.label}>
+              <h3>{group.label}</h3>
+              <div>
+                {group.options.map(([preset, label]) => (
+                  <button
+                    className={value === preset ? 'is-selected' : ''}
+                    key={preset || 'custom'}
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={value === preset}
+                    onClick={() => {
+                      onChange(preset);
+                      setOpen(false);
+                    }}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </section>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -877,6 +942,7 @@ function TrendChart({ data, visibleSeries, onToggleSeries, hoveredSeries, onHove
               series={series}
               extrema={extrema}
               isActive={hoveredExtremum?.seriesKey === series.key}
+              isDimmed={Boolean(hoveredSeries && !isTrendSeriesHighlighted(hoveredSeries, series.key))}
               onActivate={activateExtremum}
               onDeactivate={clearTrendHover}
             />
@@ -1036,10 +1102,14 @@ function ExtremumGuide({ extremum, data }) {
   );
 }
 
-function TrendExtremumMarkers({ series, extrema, isActive, onActivate, onDeactivate }) {
+function TrendExtremumMarkers({ series, extrema, isActive, isDimmed, onActivate, onDeactivate }) {
   const { minimum, maximum } = extrema;
   if (!minimum || !maximum) return null;
   const combined = minimum.date === maximum.date && minimum.value === maximum.value;
+  const color = isDimmed ? '#bdb5ab' : series.color;
+  const haloOpacity = isDimmed ? 0.03 : isActive ? 0.25 : 0.16;
+  const strokeOpacity = isDimmed ? 0.16 : 1;
+  const fill = isDimmed ? '#fffdf8' : color;
   const eventHandlers = (extremum) => ({
     onMouseEnter: () => onActivate(extremum),
     onMouseLeave: onDeactivate,
@@ -1048,18 +1118,18 @@ function TrendExtremumMarkers({ series, extrema, isActive, onActivate, onDeactiv
   if (combined) {
     return (
       <>
-        <ReferenceDot x={maximum.date} y={maximum.value} yAxisId={series.yAxisId} r={10} fill={series.color} fillOpacity={isActive ? 0.25 : 0.16} stroke="none" pointerEvents="none" />
-        <ReferenceDot x={maximum.date} y={maximum.value} yAxisId={series.yAxisId} r={6} fill="#fffdf8" stroke={series.color} strokeWidth={2.5} {...eventHandlers(maximum)} />
-        <ReferenceDot x={maximum.date} y={maximum.value} yAxisId={series.yAxisId} r={3} fill={series.color} stroke="none" pointerEvents="none" />
+        <ReferenceDot x={maximum.date} y={maximum.value} yAxisId={series.yAxisId} r={10} fill={color} fillOpacity={haloOpacity} stroke="none" pointerEvents="none" />
+        <ReferenceDot x={maximum.date} y={maximum.value} yAxisId={series.yAxisId} r={6} fill="#fffdf8" stroke={color} strokeOpacity={strokeOpacity} strokeWidth={2.5} {...eventHandlers(maximum)} />
+        <ReferenceDot x={maximum.date} y={maximum.value} yAxisId={series.yAxisId} r={3} fill={fill} fillOpacity={strokeOpacity} stroke="none" pointerEvents="none" />
       </>
     );
   }
 
   return (
     <>
-      <ReferenceDot x={maximum.date} y={maximum.value} yAxisId={series.yAxisId} r={10} fill={series.color} fillOpacity={isActive ? 0.25 : 0.16} stroke="none" pointerEvents="none" />
-      <ReferenceDot x={maximum.date} y={maximum.value} yAxisId={series.yAxisId} r={6} fill={series.color} stroke="#fffdf8" strokeWidth={2.5} {...eventHandlers(maximum)} />
-      <ReferenceDot x={minimum.date} y={minimum.value} yAxisId={series.yAxisId} r={isActive ? 7 : 6} fill="#fffdf8" stroke={series.color} strokeWidth={2.5} {...eventHandlers(minimum)} />
+      <ReferenceDot x={maximum.date} y={maximum.value} yAxisId={series.yAxisId} r={10} fill={color} fillOpacity={haloOpacity} stroke="none" pointerEvents="none" />
+      <ReferenceDot x={maximum.date} y={maximum.value} yAxisId={series.yAxisId} r={6} fill={fill} fillOpacity={strokeOpacity} stroke="#fffdf8" strokeOpacity={strokeOpacity} strokeWidth={2.5} {...eventHandlers(maximum)} />
+      <ReferenceDot x={minimum.date} y={minimum.value} yAxisId={series.yAxisId} r={isActive ? 7 : 6} fill="#fffdf8" stroke={color} strokeOpacity={strokeOpacity} strokeWidth={2.5} {...eventHandlers(minimum)} />
     </>
   );
 }
