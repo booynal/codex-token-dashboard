@@ -14,7 +14,7 @@ It aggregates `last_token_usage` from `~/.codex` sessions and surfaces daily tok
 - **Understand expensive work at a glance.** Compare Total tokens, Output tokens, cached input, and estimated cost across projects, models, and sessions.
 - **Find peaks instead of scanning JSONL files.** Daily trends, extrema markers, heatmap intensity, and highlight cards make unusually heavy days immediately apparent.
 - **Make model and reasoning choices with evidence.** Filter by model, reasoning effort, project, client, or date range to see what each workflow consumes.
-- **Start fast, expand only when needed.** The dashboard loads the most recent seven days first and can scan the full history in the background or on demand.
+- **Start fast, expand only when needed.** The dashboard loads the most recent seven days first; choosing a longer bounded date range scans only its missing days, while **全部** explicitly loads all history.
 
 ## Best Fit
 
@@ -30,16 +30,16 @@ It is intentionally a usage-analysis tool, not an OpenAI billing console. Cost f
 ## Dashboard Behavior
 
 - The initial view is filtered to the most recent seven days.
-- Default mode returns the recent result first, then refreshes automatically when the background full-history scan completes.
-- Quick mode returns the recent result and stops. Use the **扫描全部历史** button in the dashboard to start the full-history scan.
-- In quick mode, choosing **全部**, another preset, or a manual date range outside the recent week starts the full-history scan immediately.
-- Historical total and cost cards remain hidden until the full scan finishes; scan status and session/model/project counts then switch from the recent-week scope to full history.
+- Choosing a longer preset or a bounded custom date range scans and merges only the days that have not been loaded. Loaded data remains visible during the scan.
+- **全部** is the only selection that scans all available history. The **加载全部历史** command has the same explicit behavior.
+- The refresh command is debounced and rescans only the already loaded date coverage; it never expands history implicitly.
+- Historical total and cost cards identify themselves as **已加载** until all history is explicitly loaded. Scan status shows the exact loaded coverage.
 - The reasoning-effort filter and breakdown aggregate `low`, `medium`, `high`, and `xhigh` from rollout context; older records without the field appear as `未知`.
 - The source filter can isolate `Codex Desktop` and `Codex CLI` sessions using the rollout `originator` field.
 - Compact token values use `K`, `M`, and `B`; KPI values stay on one line and preserve the full value in the hover title.
 - The daily trend has linked Total, Output, and Cost axes: Output uses the Total reference divided by 100 and Cost uses the Total reference per million tokens. The three primary series retain their actual high/low ticks and distinct curve markers; Cached shares the Total scale without separate extrema. Its `Total`, `Cached`, `Output`, and `Cost` legend entries can be toggled; hover a legend, axis, line, or extrema marker to focus that series and reveal its guide line. Tooltips include the weekday and full values.
 - On desktop, drag across the daily trend's plot area to show a translucent date range. Releasing the pointer fills the start/end filters and applies the selected range.
-- The heatmap uses ten percentile-based active-usage levels and follows the dashboard's warm neutral palette. Hover a day to see its weekday, total, cache, output, and estimated cost. Before a quick-mode full scan, it represents only the loaded recent week.
+- The heatmap uses ten percentile-based active-usage levels and follows the dashboard's warm neutral palette. Hover a day to see its weekday, total, cache, output, and estimated cost. It always represents the currently loaded coverage.
 - Hover a project share to reveal its absolute path. Model shares expose their reasoning-effort grouping; reasoning-effort shares expose their model grouping.
 
 ## Mobile Layout
@@ -75,7 +75,7 @@ npm run build
 npm start
 ```
 
-From the cloned repository, start in quick mode to load only the most recent seven days. The dashboard can then load the full history on demand:
+From the cloned repository, the initial load is the most recent seven days. Choose a longer date range to extend incrementally, or choose **全部** to load all history:
 
 ```bash
 npm start -- --quick
@@ -114,7 +114,7 @@ codex-token-dashboard [options]
 | `--port <port>` | Preferred port. Defaults to `8787`. |
 | `--no-open` | Do not open the browser automatically. |
 | `--no-archived` | Exclude `archived_sessions`. |
-| `--quick` | Scan the most recent seven days first. Load all history from the dashboard when needed. |
+| `--quick` | Compatibility option. The dashboard always starts with the most recent seven days and expands only on an explicit range request. |
 
 Environment variables are also supported:
 

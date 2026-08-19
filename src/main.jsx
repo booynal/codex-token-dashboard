@@ -198,17 +198,19 @@ function App() {
   const [fxRate, setFxRate] = useState(7.2);
   const [visibleTrendSeries, setVisibleTrendSeries] = useState(getDefaultTrendSeriesVisibility);
   const [hoveredTrendSeries, setHoveredTrendSeries] = useState(null);
+  const refreshTimerRef = useRef(null);
   const isMobile = useMediaQuery('(max-width: 720px)');
-  const loadUsage = useCallback(async (force = false, background = false) => {
+  const isTodayPreset = filters.datePreset === 'today';
+  const loadUsage = useCallback(async ({ refresh = false, background = false } = {}) => {
     if (!background) {
       setError('');
-      force ? setRefreshing(true) : setLoading(true);
+      refresh ? setRefreshing(true) : setLoading(true);
     }
     try {
-      const response = await fetch(force ? '/api/refresh' : '/api/usage', {
-        method: force ? 'POST' : 'GET',
+      const response = await fetch(refresh ? '/api/refresh' : '/api/usage', {
+        method: refresh ? 'POST' : 'GET',
       });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      if (!response.ok) throw new Error(getApiErrorMessage(response, refresh ? '刷新日志' : '读取日志'));
       const data = await response.json();
       setRaw(data);
       setFilters((current) => fillDefaultDateRange(current, data.events || [], data.scan));
@@ -222,26 +224,33 @@ function App() {
     }
   }, []);
 
-  const scanFullHistory = useCallback(async () => {
+  const requestCoverage = useCallback(async (request) => {
     setError('');
     try {
-      const response = await fetch('/api/scan-full', { method: 'POST' });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const response = await fetch(request.all ? '/api/scan-all' : '/api/scan-range', {
+        method: 'POST',
+        headers: request.all ? undefined : { 'Content-Type': 'application/json' },
+        body: request.all ? undefined : JSON.stringify(request),
+      });
+      if (!response.ok) throw new Error(getApiErrorMessage(response, '扩展日志范围'));
       const data = await response.json();
       setRaw(data);
       setFilters((current) => fillDefaultDateRange(current, data.events || [], data.scan));
     } catch (err) {
-      setError(`读取完整历史失败：${err.message}`);
+      setError(`扩展日志范围失败：${err.message}`);
     }
   }, []);
 
-  const updateDateRange = useCallback((nextFilters) => {
-    setFilters(nextFilters);
-    if (rangeExtendsBeyondRecentWeek(nextFilters, raw?.scan)
-      && ['ready', 'failed'].includes(raw?.scan?.state)) {
-      void scanFullHistory();
-    }
-  }, [raw?.scan, scanFullHistory]);
+  const updateDateRange = useCallback((nextFilters) => setFilters(nextFilters), []);
+
+  const scheduleRefresh = useCallback(() => {
+    if (refreshTimerRef.current) window.clearTimeout(refreshTimerRef.current);
+    setRefreshing(true);
+    refreshTimerRef.current = window.setTimeout(() => {
+      refreshTimerRef.current = null;
+      void loadUsage({ refresh: true });
+    }, 350);
+  }, [loadUsage]);
 
   const toggleTrendSeries = useCallback((key) => {
     setVisibleTrendSeries((current) => ({ ...current, [key]: !current[key] }));
@@ -252,9 +261,25 @@ function App() {
     return () => window.clearTimeout(timer);
   }, [loadUsage]);
 
+  useEffect(() => () => {
+    if (refreshTimerRef.current) window.clearTimeout(refreshTimerRef.current);
+  }, []);
+
+  const coverageRequest = useMemo(() => getCoverageRequest(filters), [filters]);
+  const scanState = raw?.scan?.state;
+  const coverage = raw?.scan?.coverage;
+  useEffect(() => {
+    if (!raw || scanState === 'scanning' || !coverageRequest) return;
+    if (!isCoverageRequestSatisfied(coverageRequest, coverage)) {
+      const timer = window.setTimeout(() => void requestCoverage(coverageRequest), 0);
+      return () => window.clearTimeout(timer);
+    }
+    return undefined;
+  }, [coverage, coverageRequest, raw, requestCoverage, scanState]);
+
   useEffect(() => {
     if (raw?.scan?.state !== 'scanning') return undefined;
-    const timer = window.setTimeout(() => loadUsage(false, true), 1000);
+    const timer = window.setTimeout(() => loadUsage({ background: true }), 1000);
     return () => window.clearTimeout(timer);
   }, [raw, loadUsage]);
 
@@ -268,17 +293,19 @@ function App() {
     () => applyFilters(events, filters),
     [events, filters]
   );
+  const selectedRangeIncludesToday = isDateInSelectedRange(shanghaiToday(), filters);
   const analytics = useMemo(
-    () => buildAnalytics(filteredEvents, prices, projectLabels),
-    [filteredEvents, prices, projectLabels]
+    () => buildAnalytics(filteredEvents, prices, projectLabels, {
+      includeToday: selectedRangeIncludesToday,
+    }),
+    [filteredEvents, prices, projectLabels, selectedRangeIncludesToday]
   );
   const allAnalytics = useMemo(
     () => buildAnalytics(events, prices, projectLabels),
     [events, prices, projectLabels]
   );
-  const hasFullHistory = raw?.scan?.state === 'complete';
-  const isFullScanPending = Boolean(raw) && !hasFullHistory;
-  const isQuickMode = raw?.scan?.quickMode === true;
+  const hasFullHistory = coverage?.all === true;
+  const isRangeScanPending = scanState === 'scanning';
   const activeFilterCount = [
     filters.source !== 'all',
     filters.model !== 'all',
@@ -312,9 +339,9 @@ function App() {
           <button className="icon-button" onClick={() => setSettingsOpen(!settingsOpen)} title="设置">
             <Settings2 size={18} />
           </button>
-          <button className="primary-button" onClick={() => loadUsage(true)} disabled={refreshing}>
-            <RefreshCw size={17} className={refreshing ? 'spin' : ''} />
-            {refreshing ? '刷新中' : '刷新数据'}
+          <button className="primary-button" onClick={scheduleRefresh} disabled={isRangeScanPending}>
+            <RefreshCw size={17} className={(refreshing || isRangeScanPending) ? 'spin' : ''} />
+            {isRangeScanPending ? '扫描中' : refreshing ? '准备刷新' : '刷新数据'}
           </button>
         </div>
       </header>
@@ -327,23 +354,22 @@ function App() {
 
       {raw?.scan?.state === 'ready' && (
         <Notice tone="warn" icon={<Sparkles size={18} />}>
-          <span>近一周数据已就绪。</span>
-          <button className="notice-button" onClick={scanFullHistory}>扫描全部历史</button>
+          <span>{formatCoverageLabel(coverage)}已就绪；切换更长的日期范围时只会扫描尚未加载的日期。</span>
+          {!hasFullHistory && <button className="notice-button" onClick={() => requestCoverage({ all: true })}>加载全部历史</button>}
         </Notice>
       )}
 
       {raw?.scan?.state === 'scanning' && (
         <Notice tone="warn" icon={<RefreshCw size={18} className="spin" />}>
-          近一周数据已就绪，正在后台补全历史日志。
+          <span>正在{formatScanRequestLabel(raw.scan.request)}，当前已加载的数据仍可使用。</span>
+          <InlineScanProgress scan={raw.scan} />
         </Notice>
       )}
 
-      {raw?.scan?.state === 'scanning' && <ScanOverlay scan={raw.scan} />}
-
       {raw?.scan?.state === 'failed' && (
         <Notice tone="warn" icon={<AlertTriangle size={18} />}>
-          <span>历史日志补全失败：{raw.scan.error}</span>
-          <button className="notice-button" onClick={scanFullHistory}>重新扫描全部历史</button>
+          <span>日志扫描失败：{raw.scan.error}</span>
+          <button className="notice-button" onClick={() => requestCoverage(coverageRequest || { all: true })}>重新尝试</button>
         </Notice>
       )}
 
@@ -424,7 +450,7 @@ function App() {
         />
       )}
 
-      <section className={`kpi-grid ${isFullScanPending ? 'recent-only' : ''}`}>
+      <section className="kpi-grid">
         <KpiCard
           icon={<Activity size={18} />}
           label="今日 Token"
@@ -439,9 +465,11 @@ function App() {
         />
         <KpiCard
           icon={<CalendarDays size={18} />}
-          label="平均每日"
-          value={compactTokenFmt.format(analytics.averageDailyTokens)}
-          detail={`${analytics.days.length} 个有效日期`}
+          label={isTodayPreset ? '今日输出' : '平均每日'}
+          value={compactTokenFmt.format(isTodayPreset ? analytics.today.outputTokens : analytics.averageDailyTokens)}
+          detail={isTodayPreset
+            ? `${numberFmt.format(analytics.today.outputTokens)} output tokens`
+            : `${analytics.days.length} 个有效日期`}
         />
         <KpiCard
           icon={<Sparkles size={18} />}
@@ -449,26 +477,26 @@ function App() {
           value={`${Math.round(analytics.cacheRate * 100)}%`}
           detail={`${compactTokenFmt.format(analytics.total.cachedInputTokens)} cached`}
         />
-        {!isFullScanPending && (
-          <>
-            <KpiCard
-              icon={<Database size={18} />}
-              label="历史总量"
-              value={compactTokenFmt.format(analytics.total.totalTokens)}
-              detail={`${numberFmt.format(analytics.total.totalTokens)} tokens`}
-            />
-            <KpiCard
-              icon={<TrendingUp size={18} />}
-              label="历史估算金额"
-              value={compactUsdFmt.format(analytics.total.costUsd)}
-              detail={cnyFmt.format(analytics.total.costUsd * fxRate)}
-            />
-          </>
-        )}
+        <KpiCard
+          icon={<Database size={18} />}
+          label={hasFullHistory ? '历史总量' : '已加载总量'}
+          value={compactTokenFmt.format(allAnalytics.total.totalTokens)}
+          detail={`${numberFmt.format(allAnalytics.total.totalTokens)} tokens`}
+        />
+        <KpiCard
+          icon={<TrendingUp size={18} />}
+          label={hasFullHistory ? '历史估算金额' : '已加载估算金额'}
+          value={compactUsdFmt.format(allAnalytics.total.costUsd)}
+          detail={cnyFmt.format(allAnalytics.total.costUsd * fxRate)}
+        />
       </section>
 
       <section className="main-grid">
-        <Panel className="trend-panel" title="每日趋势" meta="每日 Total Token、Output 与预估成本">
+        <Panel
+          className="trend-panel"
+          title={isTodayPreset ? '今日走势' : '每日趋势'}
+          meta={isTodayPreset ? '今日 Total Token、Output 与预估成本' : '每日 Total Token、Output 与预估成本'}
+        >
           <TrendChart
             data={analytics.days}
             visibleSeries={visibleTrendSeries}
@@ -477,12 +505,11 @@ function App() {
             onHoverSeries={setHoveredTrendSeries}
             onSelectDateRange={(range) => updateDateRange({ ...filters, ...range, datePreset: '' })}
             isMobile={isMobile}
+            showExtrema={!isTodayPreset}
           />
         </Panel>
         <Panel title="用量热力图" meta="按北京时间统计每日用量">
-          {isFullScanPending && !isQuickMode
-            ? <HistoryLoading />
-            : <Heatmap data={allAnalytics.days} selectedStart={filters.startDate} selectedEnd={filters.endDate} />}
+          <Heatmap data={allAnalytics.days} selectedStart={filters.startDate} selectedEnd={filters.endDate} />
         </Panel>
       </section>
 
@@ -519,7 +546,7 @@ function Shell({ children }) {
   );
 }
 
-function ScanOverlay({ scan }) {
+function InlineScanProgress({ scan }) {
   const progress = scan?.progress;
   const totalFiles = progress?.totalFiles || 0;
   const processedFiles = progress?.processedFiles || 0;
@@ -529,22 +556,9 @@ function ScanOverlay({ scan }) {
     : '正在整理待扫描的日志文件';
 
   return (
-    <div className="scan-overlay" role="status" aria-live="polite" aria-label="正在扫描完整历史日志">
-      <section className="scan-overlay-dialog">
-        <div className="scan-overlay-icon"><RefreshCw size={26} className="spin" /></div>
-        <p className="eyebrow">历史数据扫描中</p>
-        <h2>正在扫描你的 codex 全量历史会话</h2>
-        <p>首次扫描完整历史可能需要一点时间，已加载的数据会在完成后自动更新。</p>
-        <div className="scan-progress" aria-label={progressLabel}>
-          <div className="scan-progress-track" aria-hidden="true">
-            <span style={{ width: `${percent}%` }} />
-          </div>
-          <div>
-            <strong>{totalFiles ? `${percent}%` : '准备中'}</strong>
-            <span>{progressLabel}</span>
-          </div>
-        </div>
-      </section>
+    <div className="inline-scan-progress" role="status" aria-live="polite" aria-label={progressLabel}>
+      <div className="scan-progress-track" aria-hidden="true"><span style={{ width: `${percent}%` }} /></div>
+      <span>{progressLabel} ({percent}%)</span>
     </div>
   );
 }
@@ -707,7 +721,7 @@ function SettingsPanel({ prices, setPrices, fxRate, setFxRate }) {
   );
 }
 
-function TrendChart({ data, visibleSeries, onToggleSeries, hoveredSeries, onHoverSeries, onSelectDateRange, isMobile }) {
+function TrendChart({ data, visibleSeries, onToggleSeries, hoveredSeries, onHoverSeries, onSelectDateRange, isMobile, showExtrema }) {
   const [dateDrag, setDateDrag] = useState(null);
   const [axisHitZones, setAxisHitZones] = useState([]);
   const [hoveredExtremum, setHoveredExtremum] = useState(null);
@@ -723,7 +737,7 @@ function TrendChart({ data, visibleSeries, onToggleSeries, hoveredSeries, onHove
   const tokenAxis = getTrendAxisConfig(data, 'totalTokens', totalAxisMaximum, false, TREND_COLORS.total, tokenAxisStyle.tick.fillOpacity);
   const outputAxis = getTrendAxisConfig(data, 'outputTokens', totalAxisMaximum / 100, false, TREND_COLORS.output, outputAxisStyle.tick.fillOpacity);
   const costAxis = getTrendAxisConfig(data, 'costUsd', totalAxisMaximum / 1_000_000, true, TREND_COLORS.cost, costAxisStyle.tick.fillOpacity);
-  const extremumMarkers = TREND_SERIES
+  const extremumMarkers = (showExtrema ? TREND_SERIES : [])
     .filter(({ key }) => key !== 'cachedInputTokens' && visibleSeries[key] && (!isMobile || key === 'totalTokens'))
     .map((series) => ({ series, extrema: getTrendExtrema(data, series.key) }));
   const renderedSeries = TREND_SERIES
@@ -930,12 +944,19 @@ function TrendChart({ data, visibleSeries, onToggleSeries, hoveredSeries, onHove
                 strokeDasharray={series.strokeDasharray}
                 strokeOpacity={isDimmed ? 0.12 : 1}
                 fillOpacity={isDimmed ? 0.04 : 1}
+                dot={showExtrema ? undefined : {
+                  r: 3,
+                  fill: '#fffdf8',
+                  stroke: series.color,
+                  strokeWidth: 2,
+                  onMouseEnter: () => activateTrendSeries(series.key),
+                }}
                 activeDot={{ r: 5, fill: series.color, onMouseEnter: () => activateTrendSeries(series.key) }}
                 onMouseEnter={() => activateTrendSeries(series.key)}
               />
             );
           })}
-          {hoveredExtremum && <ExtremumGuide extremum={hoveredExtremum} data={data} />}
+          {showExtrema && hoveredExtremum && <ExtremumGuide extremum={hoveredExtremum} data={data} />}
           {extremumMarkers.map(({ series, extrema }) => (
             <TrendExtremumMarkers
               key={series.key}
@@ -952,12 +973,19 @@ function TrendChart({ data, visibleSeries, onToggleSeries, hoveredSeries, onHove
         {!isMobile && axisHitZones.map((zone) => (
           <div
             key={zone.id}
-            className={`trend-axis-hit-zone ${zone.axisLabel ? 'trend-axis-label-hit-zone' : ''} ${zone.extremum ? 'trend-extremum-hit-zone' : ''}`}
+            className={`trend-axis-hit-zone trend-axis-${zone.kind}-hit-zone`}
             style={zone.style}
             onPointerDown={(event) => event.stopPropagation()}
-            onPointerEnter={() => zone.extremum
-              ? activateExtremum(getTrendExtrema(data, zone.seriesKey)[zone.extremum === 'both' ? 'maximum' : zone.extremum])
-              : activateTrendSeries(zone.seriesKeys)}
+            onPointerEnter={() => {
+              if (zone.kind === 'line') {
+                clearTrendHover();
+              } else if (zone.kind === 'point') {
+                const extrema = getTrendExtrema(data, zone.seriesKey);
+                activateExtremum(extrema[zone.extremum === 'both' ? 'maximum' : zone.extremum]);
+              } else {
+                activateTrendSeries(zone.seriesKeys);
+              }
+            }}
             onPointerLeave={clearTrendHover}
           />
         ))}
@@ -1292,7 +1320,7 @@ function HighlightGrid({ highlights }) {
 
 function ScanStatus({ raw, analytics }) {
   const warnings = raw?.warnings || [];
-  const scopeLabel = raw?.scan?.state === 'complete' ? '全量历史' : '近一周';
+  const scopeLabel = formatCoverageLabel(raw?.scan?.coverage);
   return (
     <div className="status-stack">
       <div className="status-line">
@@ -1321,19 +1349,10 @@ function EmptyState({ text }) {
   return <div className="empty-state">{text}</div>;
 }
 
-function HistoryLoading() {
-  return (
-    <div className="history-loading" role="status">
-      <RefreshCw size={22} className="spin" />
-      <span>正在汇总全量历史日志</span>
-    </div>
-  );
-}
-
 function fillDefaultDateRange(current, events, scan) {
   if (!events.length) return current;
   if (current.datePreset === 'all') {
-    return scan?.state === 'complete'
+    return scan?.coverage?.all
       ? { ...current, ...getEventDateRange(events) }
       : current;
   }
@@ -1352,13 +1371,40 @@ function getEventDateRange(events) {
   }), { startDate: '', endDate: '' });
 }
 
-function rangeExtendsBeyondRecentWeek(filters, scan) {
-  if (!scan?.recentStartDate) return false;
-  const recentEndDate = shanghaiToday();
-  return !filters.startDate
-    || !filters.endDate
-    || filters.startDate < scan.recentStartDate
-    || filters.endDate > recentEndDate;
+function getCoverageRequest(filters) {
+  if (filters.datePreset === 'all') return { all: true };
+  if (!filters.startDate || !filters.endDate || filters.startDate > filters.endDate) return null;
+  return { startDate: filters.startDate, endDate: filters.endDate };
+}
+
+function isCoverageRequestSatisfied(request, coverage) {
+  if (!request || coverage?.all) return true;
+  if (request.all) return false;
+  return (coverage?.ranges || []).some((range) => (
+    range.startDate <= request.startDate && range.endDate >= request.endDate
+  ));
+}
+
+function formatCoverageLabel(coverage) {
+  if (coverage?.all) return '全部历史';
+  const ranges = coverage?.ranges || [];
+  if (!ranges.length) return '尚未加载范围';
+  if (ranges.length === 1) return `${ranges[0].startDate} 至 ${ranges[0].endDate}`;
+  return `已加载 ${ranges.length} 段日期范围`;
+}
+
+function formatScanRequestLabel(request) {
+  if (request?.all) return '扫描全部历史';
+  const ranges = request?.ranges || [];
+  if (ranges.length === 1) return `扩展至 ${ranges[0].startDate} 至 ${ranges[0].endDate}`;
+  return ranges.length > 1 ? `扩展 ${ranges.length} 段日期范围` : '刷新已加载范围';
+}
+
+function getApiErrorMessage(response, action) {
+  if (response.status === 404) {
+    return `${action}接口不存在：本地服务端版本较旧或未重启。请停止旧看板后重新运行 npm run dev。`;
+  }
+  return `${action}失败（HTTP ${response.status}）`;
 }
 
 function getDateRangePreset(preset) {
@@ -1422,7 +1468,11 @@ function applyFilters(events, filters) {
   });
 }
 
-function buildAnalytics(events, prices, projectLabels) {
+function isDateInSelectedRange(date, { startDate, endDate }) {
+  return (!startDate || date >= startDate) && (!endDate || date <= endDate);
+}
+
+function buildAnalytics(events, prices, projectLabels, { includeToday = false } = {}) {
   const today = shanghaiToday();
   const daily = new Map();
   const models = new Map();
@@ -1455,6 +1505,10 @@ function buildAnalytics(events, prices, projectLabels) {
       projectName,
       model: event.model,
     });
+  }
+
+  if (includeToday && !daily.has(today)) {
+    daily.set(today, emptyTotals({ date: today }));
   }
 
   const days = [...daily.values()].sort((a, b) => a.date.localeCompare(b.date));
@@ -1755,8 +1809,6 @@ function getTrendAxisHitZones(surface) {
 
   const scaleX = svgBounds.width / viewBox.width;
   const scaleY = svgBounds.height / viewBox.height;
-  const plotLeft = svgBounds.left - surfaceBounds.left + ((plotX - viewBox.x) * scaleX);
-  const plotRight = plotLeft + (plotWidth * scaleX);
   const top = svgBounds.top - surfaceBounds.top + ((plotY - viewBox.y) * scaleY);
   const height = plotHeight * scaleY;
   const surfaceRight = Math.min(surfaceBounds.width, svgBounds.right - surfaceBounds.left);
@@ -1766,16 +1818,17 @@ function getTrendAxisHitZones(surface) {
     if (!line || !Number.isFinite(x1)) return null;
     return svgBounds.left - surfaceBounds.left + ((x1 - viewBox.x) * scaleX);
   };
-  const outputAxisX = axisX('trend-axis-output');
-  const costAxisX = axisX('trend-axis-cost');
   const zones = [];
+  const axisPositions = new Map();
 
-  const addZone = (id, seriesKeys, left, right) => {
-    const clampedLeft = Math.max(0, Math.min(surfaceRight, left));
-    const clampedRight = Math.max(clampedLeft, Math.min(surfaceRight, right));
+  const addLineZone = (id, seriesKeys, center) => {
+    const lineHitWidth = 8;
+    const clampedLeft = Math.max(0, Math.min(surfaceRight, center - (lineHitWidth / 2)));
+    const clampedRight = Math.max(clampedLeft, Math.min(surfaceRight, center + (lineHitWidth / 2)));
     if (clampedRight - clampedLeft < 1) return;
     zones.push({
       id,
+      kind: 'line',
       seriesKeys,
       style: {
         left: `${clampedLeft}px`,
@@ -1786,30 +1839,31 @@ function getTrendAxisHitZones(surface) {
     });
   };
 
-  const axisInset = 14;
-  if (outputAxisX !== null && costAxisX !== null) {
-    // Output labels are rendered to the right of their line. The Cost target
-    // begins beside its own line so it cannot take over a long Output label.
-    const divider = Math.max(plotRight - axisInset, costAxisX - 4);
-    addZone('output', TREND_AXIS_SERIES.output, plotRight - axisInset, divider);
-    addZone('cost', TREND_AXIS_SERIES.cost, divider, surfaceRight);
-  } else if (outputAxisX !== null) {
-    addZone('output', TREND_AXIS_SERIES.output, plotRight - axisInset, surfaceRight);
-  } else if (costAxisX !== null) {
-    addZone('cost', TREND_AXIS_SERIES.cost, plotRight - axisInset, surfaceRight);
-  }
-
+  const outputAxisX = axisX('trend-axis-output');
+  const costAxisX = axisX('trend-axis-cost');
   const tokenAxisX = axisX('trend-axis-tokens');
-  if (tokenAxisX !== null) addZone('tokens', TREND_AXIS_SERIES.tokens, 0, plotLeft + axisInset);
+  const axes = [
+    ['tokens', TREND_AXIS_SERIES.tokens, tokenAxisX],
+    ['output', TREND_AXIS_SERIES.output, outputAxisX],
+    ['cost', TREND_AXIS_SERIES.cost, costAxisX],
+  ];
+  axes.forEach(([id, seriesKeys, position]) => {
+    if (position === null) return;
+    seriesKeys.forEach((seriesKey) => axisPositions.set(seriesKey, position));
+    addLineZone(id, seriesKeys, position);
+  });
 
   svg.querySelectorAll('[data-trend-axis]').forEach((tick, index) => {
     const bounds = tick.getBoundingClientRect();
     const seriesKey = tick.getAttribute('data-trend-axis');
+    const extremum = tick.getAttribute('data-extremum');
+    const axisPosition = axisPositions.get(seriesKey);
     if (!seriesKey || !bounds.width || !bounds.height) return;
+
     zones.push({
       id: `axis-label-${seriesKey}-${index}`,
+      kind: 'label',
       seriesKeys: [seriesKey],
-      axisLabel: true,
       style: {
         left: `${Math.max(0, bounds.left - surfaceBounds.left - 4)}px`,
         top: `${Math.max(0, bounds.top - surfaceBounds.top - 4)}px`,
@@ -1817,22 +1871,20 @@ function getTrendAxisHitZones(surface) {
         height: `${bounds.height + 8}px`,
       },
     });
-  });
 
-  svg.querySelectorAll('.trend-axis-extremum-tick').forEach((tick) => {
-    const bounds = tick.getBoundingClientRect();
-    const seriesKey = tick.getAttribute('data-series-key');
-    const extremum = tick.getAttribute('data-extremum');
-    if (!seriesKey || !extremum || !bounds.width || !bounds.height) return;
+    if (!extremum || axisPosition === undefined) return;
+    const pointSize = 14;
+    const centerY = bounds.top - surfaceBounds.top + (bounds.height / 2);
     zones.push({
-      id: `extremum-${seriesKey}-${extremum}`,
+      id: `axis-point-${seriesKey}-${extremum}`,
+      kind: 'point',
       seriesKey,
       extremum,
       style: {
-        left: `${Math.max(0, bounds.left - surfaceBounds.left - 4)}px`,
-        top: `${Math.max(0, bounds.top - surfaceBounds.top - 4)}px`,
-        width: `${Math.min(surfaceBounds.width, bounds.width + 8)}px`,
-        height: `${bounds.height + 8}px`,
+        left: `${Math.max(0, axisPosition - (pointSize / 2))}px`,
+        top: `${Math.max(0, centerY - (pointSize / 2))}px`,
+        width: `${pointSize}px`,
+        height: `${pointSize}px`,
       },
     });
   });

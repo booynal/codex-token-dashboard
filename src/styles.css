@@ -550,12 +550,20 @@ h1 {
 }
 
 .trend-panel .trend-axis {
-  cursor: pointer;
+  cursor: default;
 }
 
 .trend-axis-hit-zone {
   position: absolute;
   z-index: 6;
+}
+
+.trend-axis-line-hit-zone {
+  cursor: default;
+}
+
+.trend-axis-label-hit-zone,
+.trend-axis-point-hit-zone {
   cursor: pointer;
 }
 
@@ -563,7 +571,7 @@ h1 {
   z-index: 7;
 }
 
-.trend-extremum-hit-zone {
+.trend-axis-point-hit-zone {
   z-index: 8;
 }
 
@@ -919,60 +927,21 @@ tr:last-child td {
   color: #45633f;
 }
 
-.scan-overlay {
-  position: fixed;
-  z-index: 20;
-  inset: 0;
+.inline-scan-progress {
+  min-width: min(320px, 100%);
+  margin-left: auto;
   display: grid;
-  place-items: center;
-  padding: 24px;
-  background: rgba(49, 41, 33, .48);
-  backdrop-filter: blur(3px);
+  gap: 5px;
+  color: inherit;
+  font-size: 12px;
 }
 
-.scan-overlay-dialog {
-  width: min(460px, 100%);
-  border: 1px solid #d8cec0;
-  border-radius: 8px;
-  background: #fffaf2;
-  box-shadow: 0 24px 64px rgba(35, 27, 21, .28);
-  padding: 28px;
-  text-align: center;
-}
-
-.scan-overlay-icon {
-  width: 52px;
-  height: 52px;
-  margin: 0 auto 14px;
-  display: grid;
-  place-items: center;
-  border-radius: 8px;
-  background: #f4e5d7;
-  color: #9f4d36;
-}
-
-.scan-overlay-dialog .eyebrow {
-  margin-bottom: 7px;
-}
-
-.scan-overlay-dialog h2 {
-  margin: 0;
-  color: #2d2722;
-  font-size: 24px;
-  line-height: 1.25;
-}
-
-.scan-overlay-dialog > p:not(.eyebrow) {
-  margin: 10px 0 20px;
-  color: #776d63;
-  font-size: 14px;
-  line-height: 1.6;
-}
-
-.scan-progress {
-  display: grid;
-  gap: 10px;
-  text-align: left;
+@media (max-width: 720px) {
+  .notice .inline-scan-progress {
+    width: 100%;
+    min-width: 0;
+    margin-left: 0;
+  }
 }
 
 .scan-progress-track {
@@ -989,21 +958,6 @@ tr:last-child td {
   border-radius: inherit;
   background: #9f4d36;
   transition: width .28s ease;
-}
-
-.scan-progress > div:last-child {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  align-items: baseline;
-  color: #776d63;
-  font-size: 12px;
-}
-
-.scan-progress strong {
-  color: #2d2722;
-  font-size: 16px;
-  font-variant-numeric: tabular-nums;
 }
 
 .warning-list {
@@ -1026,19 +980,11 @@ tr:last-child td {
 }
 
 .empty-state,
-.loading-panel,
-.history-loading {
+.loading-panel {
   min-height: 240px;
   display: grid;
   place-items: center;
   color: #776d63;
-}
-
-.history-loading {
-  min-height: 300px;
-  align-content: center;
-  gap: 10px;
-  font-size: 13px;
 }
 
 .loading-panel {

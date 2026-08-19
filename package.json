@@ -43,11 +43,12 @@
     "registry": "https://registry.npmjs.org/"
   },
   "scripts": {
-    "dev": "concurrently \"node server/index.js\" \"vite --host 0.0.0.0\"",
+    "dev": "concurrently --kill-others-on-fail \"node --watch server/index.js\" \"vite --host 0.0.0.0\"",
     "build": "node scripts/build.js",
     "start": "node bin/codex-token-dashboard.js",
     "preview": "npm run build && node bin/codex-token-dashboard.js --no-open",
     "lint": "eslint .",
+    "test": "node --test",
     "prepublishOnly": "node scripts/build.js --require-vite"
   },
   "dependencies": {

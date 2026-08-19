@@ -7,15 +7,17 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const HOME = os.homedir();
 const DEFAULT_CODEX_DIR = path.join(HOME, '.codex');
 const RECENT_DAYS = 7;
-const BACKGROUND_SCAN_DELAY_MS = 100;
 
 export function createApp(options = {}) {
   const app = express();
   const config = normalizeConfig(options);
   let cache = null;
-  let recentScanPromise = null;
-  let scanGeneration = 0;
-  let fullScanGeneration = null;
+  let coverage = { all: false, ranges: [] };
+  const parseCache = { files: new Map(), metadataSignature: '' };
+  let initialScanPromise = null;
+  let activeScanPromise = null;
+  let pendingScanRequest = null;
+  let scanQueue = Promise.resolve();
 
   app.use(express.json());
 
@@ -31,10 +33,7 @@ export function createApp(options = {}) {
   app.get('/api/usage', async (_req, res) => {
     try {
       if (!cache) {
-        recentScanPromise = recentScanPromise || startUsageScan().finally(() => {
-          recentScanPromise = null;
-        });
-        res.json(await recentScanPromise);
+        res.json(await startInitialScan());
         return;
       }
       res.json(cache);
@@ -45,91 +44,146 @@ export function createApp(options = {}) {
 
   app.post('/api/refresh', async (_req, res) => {
     try {
-      res.json(await startUsageScan());
+      if (!cache) await startInitialScan();
+      res.json(scheduleScan({ mode: 'refresh', ranges: coverage.ranges, all: coverage.all }));
     } catch (error) {
       res.status(500).json({ error: error.message });
     }
   });
 
-  app.post('/api/scan-full', async (_req, res) => {
+  app.post('/api/scan-range', async (req, res) => {
     try {
-      if (!cache) {
-        await startUsageScan();
-        res.json(startFullScan(scanGeneration));
-        return;
-      }
-      res.json(startFullScan(scanGeneration));
+      if (!cache) await startInitialScan();
+      res.json(scheduleScan({ mode: 'expand', ranges: [normalizeRequestedRange(req.body)] }));
+    } catch (error) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  app.post(['/api/scan-all', '/api/scan-full'], async (_req, res) => {
+    try {
+      if (!cache) await startInitialScan();
+      res.json(scheduleScan({ mode: 'all', all: true, ranges: [] }));
     } catch (error) {
       res.status(500).json({ error: error.message });
     }
   });
 
-  async function startUsageScan() {
-    const generation = ++scanGeneration;
-    const recentStartDate = getRecentStartDate();
-    const recentResult = await scanUsage(config, { minDate: recentStartDate });
-    if (generation !== scanGeneration) return cache;
-
-    cache = withScanStatus(recentResult, {
-      state: config.quickMode ? 'ready' : 'scanning',
-      recentStartDate,
-      quickMode: config.quickMode,
+  async function startInitialScan() {
+    if (initialScanPromise) return initialScanPromise;
+    const initialRange = { startDate: getRecentStartDate(), endDate: formatShanghaiDate(new Date()) };
+    initialScanPromise = enqueueScan(async () => {
+      const initialResult = await scanUsage(config, {
+        dateRanges: [initialRange],
+        parseCache,
+        pruneCache: true,
+      });
+      coverage = { all: false, ranges: [initialRange] };
+      cache = withScanStatus(initialResult, {
+        state: 'ready',
+        coverage,
+        quickMode: config.quickMode,
+      });
+      console.log(formatScanLog('Initial range scan complete', initialResult));
+      return cache;
+    }).finally(() => {
+      initialScanPromise = null;
     });
-    console.log(formatScanLog('Recent seven-day scan complete', recentResult));
-    if (!config.quickMode) startFullScan(generation);
-    return cache;
+    return initialScanPromise;
   }
 
-  function startFullScan(generation) {
-    if (!cache || fullScanGeneration === generation) return cache;
-    fullScanGeneration = generation;
-    const recentStartDate = cache.scan?.recentStartDate || getRecentStartDate();
+  function scheduleScan(request) {
+    if (!cache) return cache;
+    if (request.mode === 'expand' && isCoverageRequestSatisfied(request, coverage)) return cache;
+    if (request.mode === 'all' && coverage.all) return cache;
+
+    pendingScanRequest = mergeScanRequests(pendingScanRequest, request, coverage);
     cache = withScanStatus(cache, {
+      ...cache.scan,
       state: 'scanning',
-      recentStartDate,
-      quickMode: config.quickMode,
+      coverage,
+      request: scanRequestSummary(pendingScanRequest),
       progress: { processedFiles: 0, totalFiles: 0 },
     });
-    console.log('Full-history scan started');
-    setTimeout(() => {
-      void completeFullScan(generation, recentStartDate);
-    }, BACKGROUND_SCAN_DELAY_MS);
+    if (!activeScanPromise) {
+      activeScanPromise = enqueueScan(processPendingScans).finally(() => {
+        activeScanPromise = null;
+      });
+    }
     return cache;
   }
 
-  async function completeFullScan(generation, recentStartDate) {
+  async function processPendingScans() {
     try {
-      const fullResult = await scanUsage(config, {
-        onProgress: (progress) => {
-          if (generation !== scanGeneration || !cache) return;
-          cache = withScanStatus(cache, {
-            ...cache.scan,
-            state: 'scanning',
-            recentStartDate,
-            quickMode: config.quickMode,
-            progress,
-          });
-        },
-      });
-      if (generation !== scanGeneration) return;
-      cache = withScanStatus(fullResult, {
-        state: 'complete',
-        recentStartDate,
-        quickMode: config.quickMode,
-        progress: { processedFiles: fullResult.fileCount, totalFiles: fullResult.fileCount },
-      });
-      console.log(formatScanLog('Full-history scan complete', fullResult));
-    } catch (error) {
-      if (generation !== scanGeneration || !cache) return;
-      fullScanGeneration = null;
+      while (pendingScanRequest) {
+        const request = pendingScanRequest;
+        pendingScanRequest = null;
+        await completeScanRequest(request);
+      }
       cache = withScanStatus(cache, {
+        ...cache.scan,
+        state: 'ready',
+        coverage,
+        request: null,
+      });
+    } catch (error) {
+      cache = withScanStatus(cache, {
+        ...cache.scan,
         state: 'failed',
-        recentStartDate,
-        quickMode: config.quickMode,
+        coverage,
         error: error.message,
       });
-      console.error(`Full-history scan failed: ${error.message}`);
+      console.error(`Range scan failed: ${error.message}`);
     }
+  }
+
+  async function completeScanRequest(request) {
+    const requestedRanges = request.all
+      ? []
+      : request.mode === 'refresh'
+        ? normalizeDateRanges([...coverage.ranges, ...request.ranges])
+        : subtractCoverageRanges(request.ranges, coverage.ranges);
+    if (!request.all && !requestedRanges.length) return;
+
+    const result = await scanUsage(config, {
+      dateRanges: requestedRanges,
+      parseCache,
+      pruneCache: request.all,
+      onProgress: (progress) => {
+        if (!cache) return;
+        cache = withScanStatus(cache, {
+          ...cache.scan,
+          state: 'scanning',
+          coverage,
+          request: scanRequestSummary(request),
+          progress,
+        });
+      },
+    });
+
+    if (request.all) {
+      coverage = { all: true, ranges: [] };
+      cache = withScanStatus(result, { ...cache.scan, coverage });
+      console.log(formatScanLog('All-history scan complete', result));
+      return;
+    }
+
+    const nextCoverage = {
+      all: false,
+      ranges: normalizeDateRanges([...coverage.ranges, ...requestedRanges]),
+    };
+    coverage = nextCoverage;
+    const nextSnapshot = request.mode === 'refresh'
+      ? result
+      : mergeScanResults(cache, result);
+    cache = withScanStatus(nextSnapshot, { ...cache.scan, coverage });
+    console.log(formatScanLog(request.mode === 'refresh' ? 'Coverage refresh complete' : 'Range expansion complete', result));
+  }
+
+  function enqueueScan(task) {
+    const queued = scanQueue.then(task, task);
+    scanQueue = queued.catch(() => {});
+    return queued;
   }
 
   if (config.staticMode) {
@@ -166,7 +220,8 @@ function normalizeConfig(options = {}) {
   };
 }
 
-async function scanUsage(config, { minDate = '', onProgress } = {}) {
+async function scanUsage(config, { dateRanges = [], onProgress, parseCache, pruneCache = false } = {}) {
+  const normalizedRanges = normalizeDateRanges(dateRanges);
   const startedAt = new Date();
   const warnings = [];
   const events = [];
@@ -174,20 +229,34 @@ async function scanUsage(config, { minDate = '', onProgress } = {}) {
   const sourceDirs = getSourceDirs(config);
   const sessionNames = readSessionNames(config.codexDir, warnings);
   const workspaceLabels = readWorkspaceLabels(config.codexDir, warnings);
+  const metadataSignature = getMetadataSignature(config.codexDir);
+  if (parseCache && parseCache.metadataSignature !== metadataSignature) {
+    parseCache.files.clear();
+    parseCache.metadataSignature = metadataSignature;
+  }
 
-  const rolloutFiles = sourceDirs.flatMap((source) => listRolloutFiles(source.dir, warnings, minDate)
+  const rolloutFiles = sourceDirs.flatMap((source) => listRolloutFiles(source.dir, warnings, normalizedRanges)
     .map((file) => ({ file, source })));
+  const scannedPaths = new Set();
   onProgress?.({ processedFiles: 0, totalFiles: rolloutFiles.length });
 
   for (let index = 0; index < rolloutFiles.length; index += 1) {
     const { file, source } = rolloutFiles[index];
-    const parsed = parseRolloutFile(file, source, warnings, sessionNames, workspaceLabels, minDate);
+    scannedPaths.add(file);
+    const parsed = getParsedRolloutFile(file, source, sessionNames, workspaceLabels, parseCache);
     files.push(parsed.file);
-    events.push(...parsed.events);
+    warnings.push(...parsed.warnings);
+    events.push(...parsed.events.filter((event) => isDateInRanges(event.date, normalizedRanges)));
     const processedFiles = index + 1;
     if (processedFiles === rolloutFiles.length || processedFiles % 20 === 0) {
       onProgress?.({ processedFiles, totalFiles: rolloutFiles.length });
       await yieldToEventLoop();
+    }
+  }
+
+  if (parseCache && pruneCache) {
+    for (const filePath of parseCache.files.keys()) {
+      if (!scannedPaths.has(filePath)) parseCache.files.delete(filePath);
     }
   }
 
@@ -205,6 +274,32 @@ async function scanUsage(config, { minDate = '', onProgress } = {}) {
     warnings,
     scanMs: new Date() - startedAt,
   };
+}
+
+function getParsedRolloutFile(filePath, source, sessionNames, workspaceLabels, parseCache) {
+  const signature = getFileSignature(filePath);
+  const cached = parseCache?.files.get(filePath);
+  if (signature && cached?.signature === signature) return cached.parsed;
+
+  const parsed = parseRolloutFile(filePath, source, sessionNames, workspaceLabels);
+  if (signature && parseCache) parseCache.files.set(filePath, { signature, parsed });
+  return parsed;
+}
+
+function getMetadataSignature(codexDir) {
+  return [
+    path.join(codexDir, 'session_index.jsonl'),
+    path.join(codexDir, '.codex-global-state.json'),
+  ].map((filePath) => `${filePath}:${getFileSignature(filePath) || 'missing'}`).join('|');
+}
+
+function getFileSignature(filePath) {
+  try {
+    const stat = fs.statSync(filePath);
+    return `${stat.mtimeMs}:${stat.size}`;
+  } catch {
+    return null;
+  }
 }
 
 function yieldToEventLoop() {
@@ -229,6 +324,111 @@ function getRecentStartDate() {
   return start.toISOString().slice(0, 10);
 }
 
+function normalizeRequestedRange(body = {}) {
+  const startDate = String(body.startDate || '');
+  const endDate = String(body.endDate || formatShanghaiDate(new Date()));
+  if (!isIsoDate(startDate) || !isIsoDate(endDate) || startDate > endDate) {
+    throw new Error('日期范围无效');
+  }
+  return { startDate, endDate };
+}
+
+function isIsoDate(value) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(value) && Number.isFinite(Date.parse(`${value}T00:00:00Z`));
+}
+
+function normalizeDateRanges(ranges = []) {
+  const sorted = ranges
+    .filter((range) => isIsoDate(range?.startDate) && isIsoDate(range?.endDate) && range.startDate <= range.endDate)
+    .map((range) => ({ startDate: range.startDate, endDate: range.endDate }))
+    .sort((left, right) => left.startDate.localeCompare(right.startDate));
+  const normalized = [];
+  for (const range of sorted) {
+    const previous = normalized.at(-1);
+    if (previous && range.startDate <= addDays(previous.endDate, 1)) {
+      if (range.endDate > previous.endDate) previous.endDate = range.endDate;
+    } else {
+      normalized.push(range);
+    }
+  }
+  return normalized;
+}
+
+function subtractCoverageRanges(requestedRanges, coveredRanges) {
+  const gaps = [];
+  const covered = normalizeDateRanges(coveredRanges);
+  for (const requested of normalizeDateRanges(requestedRanges)) {
+    let cursor = requested.startDate;
+    for (const existing of covered) {
+      if (existing.endDate < cursor) continue;
+      if (existing.startDate > requested.endDate) break;
+      if (existing.startDate > cursor) {
+        gaps.push({ startDate: cursor, endDate: addDays(existing.startDate, -1) });
+      }
+      if (existing.endDate >= requested.endDate) {
+        cursor = '';
+        break;
+      }
+      cursor = addDays(existing.endDate, 1);
+    }
+    if (cursor && cursor <= requested.endDate) gaps.push({ startDate: cursor, endDate: requested.endDate });
+  }
+  return normalizeDateRanges(gaps);
+}
+
+function addDays(date, amount) {
+  const next = new Date(`${date}T00:00:00Z`);
+  next.setUTCDate(next.getUTCDate() + amount);
+  return next.toISOString().slice(0, 10);
+}
+
+function isDateInRanges(date, ranges) {
+  return !ranges.length || ranges.some((range) => date >= range.startDate && date <= range.endDate);
+}
+
+function isCoverageRequestSatisfied(request, currentCoverage) {
+  return currentCoverage.all || subtractCoverageRanges(request.ranges, currentCoverage.ranges).length === 0;
+}
+
+function mergeScanRequests(current, next, currentCoverage) {
+  if (!current) return next;
+  if (current.all || next.all) return { mode: 'all', all: true, ranges: [] };
+  const ranges = normalizeDateRanges([...current.ranges, ...next.ranges]);
+  const mode = current.mode === 'refresh' || next.mode === 'refresh' ? 'refresh' : 'expand';
+  return mode === 'refresh'
+    ? { mode, all: currentCoverage.all, ranges: normalizeDateRanges([...currentCoverage.ranges, ...ranges]) }
+    : { mode, all: false, ranges };
+}
+
+function scanRequestSummary(request) {
+  return {
+    mode: request.mode,
+    all: Boolean(request.all),
+    ranges: request.ranges || [],
+  };
+}
+
+function mergeScanResults(current, delta) {
+  const eventKey = (event) => `${event.filePath}:${event.id}`;
+  const fileKey = (file) => `${file.source}:${file.path}`;
+  const warningKey = (warning) => `${warning.type}:${warning.message}`;
+  const events = new Map((current?.events || []).map((event) => [eventKey(event), event]));
+  const files = new Map((current?.files || []).map((file) => [fileKey(file), file]));
+  const warnings = new Map((current?.warnings || []).map((warning) => [warningKey(warning), warning]));
+  delta.events.forEach((event) => events.set(eventKey(event), event));
+  delta.files.forEach((file) => files.set(fileKey(file), file));
+  delta.warnings.forEach((warning) => warnings.set(warningKey(warning), warning));
+  const mergedEvents = [...events.values()].sort((left, right) => left.timestamp.localeCompare(right.timestamp));
+  return {
+    ...delta,
+    eventCount: mergedEvents.length,
+    fileCount: files.size,
+    events: mergedEvents,
+    files: [...files.values()],
+    warnings: [...warnings.values()],
+  };
+}
+
 function getSourceDirs(config) {
   const dirs = [
     { key: 'current', label: '当前日志', dir: path.join(config.codexDir, 'sessions') },
@@ -239,7 +439,7 @@ function getSourceDirs(config) {
   return dirs;
 }
 
-function listRolloutFiles(root, warnings, minDate = '') {
+function listRolloutFiles(root, warnings, dateRanges = []) {
   if (!fs.existsSync(root)) {
     warnings.push({ type: 'missing_root', message: `日志目录不存在：${root}` });
     return [];
@@ -262,7 +462,7 @@ function listRolloutFiles(root, warnings, minDate = '') {
       if (entry.isDirectory()) {
         stack.push(fullPath);
       } else if (entry.isFile() && /^rollout-.*\.jsonl$/.test(entry.name)) {
-        if (minDate && !isRecentRolloutFile(fullPath, minDate, warnings)) continue;
+        if (!isRolloutFileInRanges(fullPath, dateRanges, warnings)) continue;
         result.push(fullPath);
       }
     }
@@ -278,12 +478,16 @@ function getDateFromPath(filePath) {
   return filenameMatch?.[1] || '';
 }
 
-function isRecentRolloutFile(filePath, minDate, warnings) {
+function isRolloutFileInRanges(filePath, dateRanges, warnings) {
+  if (!dateRanges.length) return true;
   const pathDate = getDateFromPath(filePath);
-  if (pathDate && pathDate >= minDate) return true;
+  if (pathDate && isDateInRanges(pathDate, dateRanges)) return true;
 
   try {
-    return formatShanghaiDate(fs.statSync(filePath).mtime) >= minDate;
+    const modifiedDate = formatShanghaiDate(fs.statSync(filePath).mtime);
+    // An older rollout can stay active across a requested boundary. Re-read it
+    // whenever it changed after the start of a requested range.
+    return dateRanges.some((range) => modifiedDate >= range.startDate);
   } catch (error) {
     warnings.push({ type: 'stat_file_failed', message: `${filePath}: ${error.message}` });
     return false;
@@ -341,7 +545,8 @@ function readWorkspaceLabels(codexDir, warnings) {
   }
 }
 
-function parseRolloutFile(filePath, source, warnings, sessionNames, workspaceLabels, minDate = '') {
+function parseRolloutFile(filePath, source, sessionNames, workspaceLabels) {
+  const warnings = [];
   const fileSummary = {
     path: filePath,
     source: source.key,
@@ -369,7 +574,7 @@ function parseRolloutFile(filePath, source, warnings, sessionNames, workspaceLab
     content = fs.readFileSync(filePath, 'utf8');
   } catch (error) {
     warnings.push({ type: 'read_file_failed', message: `${filePath}: ${error.message}` });
-    return { file: fileSummary, events };
+    return { file: fileSummary, events, warnings };
   }
 
   const lines = content.split(/\r?\n/);
@@ -427,16 +632,37 @@ function parseRolloutFile(filePath, source, warnings, sessionNames, workspaceLab
       return;
     }
 
-    const timestamp = record.timestamp || new Date(0).toISOString();
+    const timestamp = record.timestamp;
+    if (typeof timestamp !== 'string' || !Number.isFinite(Date.parse(timestamp))) {
+      warnings.push({
+        type: 'invalid_timestamp',
+        message: `${filePath}:${index + 1}: token_count 时间戳无效`,
+      });
+      return;
+    }
     const date = formatShanghaiDate(timestamp);
-    if (minDate && date < minDate) return;
-    const inputTokens = Number(usage.input_tokens || 0);
-    const cachedInputTokens = Number(usage.cached_input_tokens || 0);
-    const outputTokens = Number(usage.output_tokens || 0);
-    const reasoningOutputTokens = Number(usage.reasoning_output_tokens || 0);
-    const totalTokens = Number(
-      usage.total_tokens || inputTokens + outputTokens
-    );
+    const inputTokens = getTokenCount(usage.input_tokens, 'input_tokens', filePath, index, warnings);
+    const rawCachedInputTokens = getTokenCount(usage.cached_input_tokens, 'cached_input_tokens', filePath, index, warnings);
+    const cachedInputTokens = Math.min(inputTokens, rawCachedInputTokens);
+    if (rawCachedInputTokens > inputTokens) {
+      warnings.push({
+        type: 'cached_input_exceeds_input',
+        message: `${filePath}:${index + 1}: cached_input_tokens 大于 input_tokens，已按 input_tokens 计`,
+      });
+    }
+    const outputTokens = getTokenCount(usage.output_tokens, 'output_tokens', filePath, index, warnings);
+    const reasoningOutputTokens = getTokenCount(usage.reasoning_output_tokens, 'reasoning_output_tokens', filePath, index, warnings);
+    const declaredTotalTokens = Number(usage.total_tokens);
+    const hasValidDeclaredTotal = usage.total_tokens != null
+      && Number.isFinite(declaredTotalTokens)
+      && declaredTotalTokens >= 0;
+    if (usage.total_tokens != null && !hasValidDeclaredTotal) {
+      warnings.push({
+        type: 'invalid_token_count',
+        message: `${filePath}:${index + 1}: total_tokens 不是有效的非负数，已按 input_tokens + output_tokens 计`,
+      });
+    }
+    const totalTokens = hasValidDeclaredTotal ? declaredTotalTokens : inputTokens + outputTokens;
 
     events.push({
       id: `${sessionId}:${index + 1}`,
@@ -473,7 +699,18 @@ function parseRolloutFile(filePath, source, warnings, sessionNames, workspaceLab
   fileSummary.originator = fileSummary.originator || currentOriginator;
   fileSummary.client = fileSummary.client || getClientType(currentOriginator);
 
-  return { file: fileSummary, events };
+  return { file: fileSummary, events, warnings };
+}
+
+function getTokenCount(value, field, filePath, index, warnings) {
+  if (value == null) return 0;
+  const parsed = Number(value);
+  if (Number.isFinite(parsed) && parsed >= 0) return parsed;
+  warnings.push({
+    type: 'invalid_token_count',
+    message: `${filePath}:${index + 1}: ${field} 不是有效的非负数，已按 0 计`,
+  });
+  return 0;
 }
 
 function getReasoningEffort(payload) {
