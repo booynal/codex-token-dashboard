@@ -29,6 +29,7 @@ import {
   Sparkles,
   TrendingUp,
 } from 'lucide-react';
+import { millisecondsUntilNextHour } from './hourlyRefresh.js';
 import { areTrendValuesEqual, getTrendAxisConfig, getTrendExtrema, getTrendReferenceMaximum } from './trendAxis.js';
 import './styles.css';
 
@@ -194,6 +195,7 @@ function App() {
   const [visibleTrendSeries, setVisibleTrendSeries] = useState(getDefaultTrendSeriesVisibility);
   const [hoveredTrendSeries, setHoveredTrendSeries] = useState(null);
   const refreshTimerRef = useRef(null);
+  const hourlyRefreshTimerRef = useRef(null);
   const isMobile = useMediaQuery('(max-width: 720px)');
   const isTodayPreset = filters.datePreset === 'today';
   const loadUsage = useCallback(async ({ refresh = false, background = false } = {}) => {
@@ -259,6 +261,23 @@ function App() {
   useEffect(() => () => {
     if (refreshTimerRef.current) window.clearTimeout(refreshTimerRef.current);
   }, []);
+
+  useEffect(() => {
+    let active = true;
+    const scheduleNextRefresh = () => {
+      hourlyRefreshTimerRef.current = window.setTimeout(async () => {
+        hourlyRefreshTimerRef.current = null;
+        if (!active) return;
+        await loadUsage({ refresh: true, background: true });
+        if (active) scheduleNextRefresh();
+      }, millisecondsUntilNextHour());
+    };
+    scheduleNextRefresh();
+    return () => {
+      active = false;
+      if (hourlyRefreshTimerRef.current) window.clearTimeout(hourlyRefreshTimerRef.current);
+    };
+  }, [loadUsage]);
 
   const coverageRequest = useMemo(() => getCoverageRequest(filters), [filters]);
   const scanState = raw?.scan?.state;
