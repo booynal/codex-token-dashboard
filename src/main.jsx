@@ -29,6 +29,7 @@ import {
   Sparkles,
   TrendingUp,
 } from 'lucide-react';
+import { areTrendValuesEqual, getTrendAxisConfig, getTrendExtrema, getTrendReferenceMaximum } from './trendAxis.js';
 import './styles.css';
 
 const DEFAULT_PRICES = {
@@ -128,12 +129,6 @@ const TREND_AXIS_SERIES = {
   output: ['outputTokens'],
   cost: ['costUsd'],
 };
-const TREND_MAGNITUDE_UNITS = [
-  { divisor: 1_000_000_000, suffix: 'B' },
-  { divisor: 1_000_000, suffix: 'M' },
-  { divisor: 1_000, suffix: 'K' },
-  { divisor: 1, suffix: '' },
-];
 const REASONING_EFFORT_LABELS = {
   low: '低 (low)',
   medium: '中 (medium)',
@@ -1069,7 +1064,7 @@ function TrendAxisTick({ x, y, payload, axis, orientation, compact = false }) {
       <text
         x={labelX}
         y={y}
-        dy="0.32em"
+        dy={extremum ? 4 + axis.getExtremumTickOffset(value) : '0.32em'}
         textAnchor={orientation === 'right' ? 'start' : 'end'}
         fill={axis.color}
         fillOpacity={axis.opacity}
@@ -1704,93 +1699,6 @@ function getTrendAxisStyle(seriesKeys, hoveredSeries, color, dashed = false) {
 function isTrendSeriesHighlighted(hoveredSeries, seriesKey) {
   return !hoveredSeries
     || (Array.isArray(hoveredSeries) ? hoveredSeries.includes(seriesKey) : hoveredSeries === seriesKey);
-}
-
-function getTrendAxisConfig(data, seriesKey, maximum, isCurrency, color, opacity) {
-  const values = data.map((row) => Math.max(0, Number(row[seriesKey] || 0)));
-  const safeMaximum = Math.max(maximum, 1);
-  const unit = getTrendMagnitudeUnit(safeMaximum);
-  const baseFractionDigits = getTrendAxisFractionDigits(safeMaximum / 4, unit.divisor);
-  const extrema = getTrendExtrema(data, seriesKey);
-  return {
-    seriesKey,
-    domain: [0, safeMaximum],
-    color,
-    opacity,
-    extrema,
-    // Keep the regular five reference ticks, then add the real data extrema.
-    // Cached is intentionally excluded because it shares the Total axis.
-    ticks: getTrendAxisTicks(safeMaximum, values),
-    formatter: (value) => formatTrendAxisValue(value, unit, isCurrency, baseFractionDigits),
-    extremumFormatter: (value) => formatTrendAxisValue(value, unit, isCurrency, baseFractionDigits + 1),
-  };
-}
-
-function getTrendReferenceMaximum(data) {
-  const totalMaximum = getTrendSeriesMaximum(data, 'totalTokens');
-  const outputAsTotal = getTrendSeriesMaximum(data, 'outputTokens') * 100;
-  const costAsTotal = getTrendSeriesMaximum(data, 'costUsd') * 1_000_000;
-  return getNiceAxisMaximum(Math.max(totalMaximum, outputAsTotal, costAsTotal));
-}
-
-function getTrendSeriesMaximum(data, seriesKey) {
-  return Math.max(0, ...data.map((row) => Math.max(0, Number(row[seriesKey] || 0))));
-}
-
-function getTrendExtrema(data, seriesKey) {
-  return data.reduce((extrema, row) => {
-    const value = Math.max(0, Number(row[seriesKey] || 0));
-    const point = { date: row.date, value, seriesKey };
-    return {
-      minimum: !extrema.minimum || value < extrema.minimum.value ? point : extrema.minimum,
-      maximum: !extrema.maximum || value > extrema.maximum.value ? point : extrema.maximum,
-    };
-  }, { minimum: null, maximum: null });
-}
-
-function getNiceAxisMaximum(value) {
-  if (!value) return 1;
-  const magnitude = 10 ** Math.floor(Math.log10(value));
-  const normalized = value / magnitude;
-  const step = [1, 1.25, 1.5, 2, 2.5, 5, 10].find((candidate) => normalized <= candidate) || 10;
-  return step * magnitude;
-}
-
-function getTrendMagnitudeUnit(maximum) {
-  return TREND_MAGNITUDE_UNITS.find(({ divisor }) => maximum >= divisor) || TREND_MAGNITUDE_UNITS.at(-1);
-}
-
-function getTrendAxisTicks(maximum, values) {
-  const regularTicks = Array.from({ length: 5 }, (_, index) => (maximum * index) / 4);
-  const actualMinimum = Math.min(...values);
-  const actualMaximum = Math.max(...values);
-  return [...new Set([...regularTicks, actualMinimum, actualMaximum])]
-    .filter((value) => value >= 0 && value <= maximum)
-    .sort((left, right) => left - right);
-}
-
-function getTrendAxisFractionDigits(step, divisor) {
-  const normalized = Math.abs(step / divisor);
-  for (let digits = 0; digits <= 3; digits += 1) {
-    if (Number.isInteger(normalized * (10 ** digits))) return digits;
-  }
-  return 3;
-}
-
-function formatTrendAxisValue(value, unit, isCurrency, maximumFractionDigits = 4) {
-  const absoluteValue = Math.abs(Number(value || 0));
-  const scaled = absoluteValue / unit.divisor;
-  if (scaled === 0) return isCurrency ? '$0' : '0';
-
-  const formatted = new Intl.NumberFormat('en-US', {
-    maximumFractionDigits,
-  }).format(Number(value || 0) / unit.divisor);
-  return `${isCurrency ? '$' : ''}${formatted}${unit.suffix}`;
-}
-
-function areTrendValuesEqual(left, right) {
-  if (!Number.isFinite(left) || !Number.isFinite(right)) return false;
-  return Math.abs(left - right) <= Math.max(1, Math.abs(left), Math.abs(right)) * 1e-10;
 }
 
 function getTrendAxisHitZones(surface) {
