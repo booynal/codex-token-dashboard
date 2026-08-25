@@ -344,15 +344,32 @@ function App() {
       <header className="topbar">
         <div>
           <p className="eyebrow">Codex Usage Ledger</p>
-          <h1>Token 用量看板</h1>
-          <p className="subtle">
-            按 last_token_usage 聚合，金额按 OpenAI API 公开价格估算。
-          </p>
+          <div className="title-line">
+            <h1>Token 用量看板</h1>
+            <p className="subtle">
+              按 last_token_usage 聚合，金额按 OpenAI API 公开价格估算。
+            </p>
+          </div>
         </div>
         <div className="topbar-actions">
           <button className="icon-button" onClick={() => setSettingsOpen(!settingsOpen)} title="设置">
             <Settings2 size={18} />
           </button>
+          {raw?.scan?.state === 'ready' && !hasFullHistory && (
+            <div className="history-load-control">
+              <span className="coverage-tooltip" id="history-load-coverage" role="tooltip">
+                {formatCoverageLabel(coverage)}已就绪；切换更长的日期范围时只会扫描尚未加载的日期。
+              </span>
+              <button
+                className="secondary-button"
+                aria-describedby="history-load-coverage"
+                onClick={() => requestCoverage({ all: true })}
+              >
+                <Database size={17} />
+                加载全部历史
+              </button>
+            </div>
+          )}
           <button className="primary-button" onClick={scheduleRefresh} disabled={isRangeScanPending}>
             <RefreshCw size={17} className={(refreshing || isRangeScanPending) ? 'spin' : ''} />
             {isRangeScanPending ? '扫描中' : refreshing ? '准备刷新' : '刷新数据'}
@@ -363,13 +380,6 @@ function App() {
       {error && (
         <Notice tone="danger" icon={<AlertTriangle size={18} />}>
           {error}
-        </Notice>
-      )}
-
-      {raw?.scan?.state === 'ready' && (
-        <Notice tone="warn" icon={<Sparkles size={18} />}>
-          <span>{formatCoverageLabel(coverage)}已就绪；切换更长的日期范围时只会扫描尚未加载的日期。</span>
-          {!hasFullHistory && <button className="notice-button" onClick={() => requestCoverage({ all: true })}>加载全部历史</button>}
         </Notice>
       )}
 

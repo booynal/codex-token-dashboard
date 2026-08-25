@@ -83,10 +83,20 @@ h1 {
   color: #2b2520;
 }
 
+.title-line {
+  display: flex;
+  align-items: baseline;
+  gap: 0 14px;
+}
+
 .subtle {
   margin: 10px 0 0;
   color: #776d63;
   font-size: 15px;
+}
+
+.title-line .subtle {
+  white-space: nowrap;
 }
 
 .topbar-actions {
@@ -95,7 +105,38 @@ h1 {
   align-items: center;
 }
 
+.history-load-control {
+  position: relative;
+}
+
+.coverage-tooltip {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  z-index: 2;
+  width: max-content;
+  max-width: 390px;
+  padding: 8px 10px;
+  border: 1px solid #ded3c4;
+  border-radius: 6px;
+  background: #fffaf2;
+  box-shadow: 0 8px 20px rgba(51, 41, 33, .12);
+  color: #776d63;
+  font-size: 12px;
+  line-height: 1.45;
+  pointer-events: none;
+  visibility: hidden;
+  opacity: 0;
+}
+
+.history-load-control:hover .coverage-tooltip,
+.history-load-control:focus-within .coverage-tooltip {
+  visibility: visible;
+  opacity: 1;
+}
+
 .primary-button,
+.secondary-button,
 .icon-button {
   border: 1px solid #d8cec0;
   background: #fffaf2;
@@ -117,11 +158,16 @@ h1 {
   border-color: #2f2924;
 }
 
+.secondary-button {
+  padding: 0 13px;
+}
+
 .icon-button {
   width: 40px;
 }
 
 .primary-button:hover,
+.secondary-button:hover,
 .icon-button:hover {
   transform: translateY(-1px);
   border-color: #b99b82;
@@ -164,21 +210,26 @@ h1 {
 }
 
 .field {
-  display: grid;
-  gap: 5px;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .field span {
   color: #786c61;
   font-size: 12px;
   font-weight: 700;
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 .field select,
 .field input,
 .date-preset-trigger,
 .price-box input {
-  width: 100%;
+  width: auto;
+  flex: 1 1 auto;
   min-width: 0;
   height: 38px;
   border-radius: 7px;
@@ -996,6 +1047,13 @@ tr:last-child td {
   align-content: center;
 }
 
+@media (max-width: 1320px) {
+  .topbar {
+    grid-template-columns: 1fr;
+    display: grid;
+  }
+}
+
 @media (max-width: 1240px) {
   body {
     min-width: 0;
@@ -1005,7 +1063,6 @@ tr:last-child td {
     padding: 24px 18px 42px;
   }
 
-  .topbar,
   .settings-panel,
   .main-grid,
   .split-grid {
@@ -1233,6 +1290,20 @@ tr:last-child td {
 
   .topbar-actions {
     justify-content: start;
+  }
+
+  .title-line {
+    flex-wrap: wrap;
+  }
+
+  .title-line .subtle {
+    white-space: normal;
+  }
+
+  .coverage-tooltip {
+    right: auto;
+    left: 0;
+    width: min(390px, calc(100vw - 24px));
   }
 }
 
