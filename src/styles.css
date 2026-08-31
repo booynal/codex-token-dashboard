@@ -198,7 +198,7 @@ h1 {
 
 .filter-strip {
   display: grid;
-  grid-template-columns: 150px minmax(150px, .8fr) minmax(140px, .7fr) minmax(220px, 1.3fr) 150px 150px 150px;
+  grid-template-columns: 150px minmax(150px, .8fr) minmax(140px, .7fr) minmax(220px, 1.3fr) 190px 190px 150px;
   gap: 10px;
   padding: 12px;
   border-radius: 10px;
@@ -237,6 +237,48 @@ h1 {
   background: #fffdf8;
   color: #302a25;
   padding: 0 10px;
+  outline: none;
+}
+
+.date-field {
+  min-width: 190px;
+}
+
+.date-input-control {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.date-input-control input[type="date"] {
+  width: 100%;
+  padding-right: 38px;
+}
+
+.date-input-control input[type="date"]::-webkit-calendar-picker-indicator {
+  display: none;
+}
+
+.date-picker-button {
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  width: 30px;
+  height: 30px;
+  transform: translateY(-50%);
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #786c61;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+
+.date-picker-button:hover,
+.date-picker-button:focus-visible {
+  background: #f1e8dc;
+  color: #9f4d36;
   outline: none;
 }
 
@@ -1151,6 +1193,10 @@ tr:last-child td {
   }
 
   .filter-strip .date-preset-field {
+    grid-column: 1 / -1;
+  }
+
+  .filter-strip .date-field {
     grid-column: 1 / -1;
   }
 

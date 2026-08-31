@@ -630,10 +630,22 @@ function Select({ label, value, onChange, options }) {
 }
 
 function DateField({ label, value, onChange }) {
+  const inputRef = useRef(null);
+
+  const openDatePicker = () => {
+    inputRef.current?.focus();
+    inputRef.current?.showPicker?.();
+  };
+
   return (
-    <label className="field">
+    <label className="field date-field">
       <span>{label}</span>
-      <input type="date" value={value} onChange={(event) => onChange(event.target.value)} />
+      <div className="date-input-control">
+        <input ref={inputRef} type="date" value={value} onChange={(event) => onChange(event.target.value)} />
+        <button className="date-picker-button" type="button" aria-label={`选择${label}日期`} onClick={openDatePicker}>
+          <CalendarDays size={16} aria-hidden="true" />
+        </button>
+      </div>
     </label>
   );
 }
