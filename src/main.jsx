@@ -22,6 +22,7 @@ import {
   ChevronDown,
   CircleDollarSign,
   Database,
+  ExternalLink,
   FolderGit2,
   RefreshCw,
   Settings2,
@@ -34,45 +35,83 @@ import { areTrendValuesEqual, getTrendAxisConfig, getTrendExtrema, getTrendRefer
 import './styles.css';
 
 const DEFAULT_PRICES = {
+  gpt6Astra: {
+    label: 'GPT-6 Astra',
+    input: 10,
+    cached: 1,
+    output: 50,
+    url: 'https://developers.openai.com/api/docs/models/gpt-6-astra',
+  },
+  gpt61Sol: {
+    label: 'GPT-6.1 Sol',
+    input: 2,
+    cached: 0.1,
+    output: 10,
+    url: 'https://developers.openai.com/api/docs/models/gpt-6.1-sol',
+  },
+  gpt6Sol: {
+    label: 'GPT-6 Sol',
+    input: 2,
+    cached: 0.2,
+    output: 10,
+    url: 'https://developers.openai.com/api/docs/models/gpt-6-sol',
+  },
+  gpt6Luna: {
+    label: 'GPT-6 Luna',
+    input: 0.1,
+    cached: 0.01,
+    output: 0.5,
+    url: 'https://developers.openai.com/api/docs/models/gpt-6-luna',
+  },
   gpt56Sol: {
     label: 'GPT-5.6 Sol',
-    input: 5,
-    cached: 0.5,
-    output: 30,
+    input: 4,
+    cached: 0.4,
+    output: 20,
+    url: 'https://developers.openai.com/api/docs/models/gpt-5.6-sol',
   },
   gpt56Terra: {
     label: 'GPT-5.6 Terra',
     input: 2,
     cached: 0.2,
     output: 12,
+    url: 'https://developers.openai.com/api/docs/models/gpt-5.6-terra',
   },
   gpt56Luna: {
     label: 'GPT-5.6 Luna',
     input: 0.2,
     cached: 0.02,
     output: 1.2,
+    url: 'https://developers.openai.com/api/docs/models/gpt-5.6-luna',
   },
   gpt55: {
     label: 'GPT-5.5',
     input: 5,
     cached: 0.5,
     output: 30,
+    url: 'https://developers.openai.com/api/docs/models/gpt-5.5',
   },
   gpt54: {
     label: 'GPT-5.4',
     input: 2.5,
     cached: 0.25,
     output: 15,
+    url: 'https://developers.openai.com/api/docs/models/gpt-5.4',
   },
   gpt54Mini: {
     label: 'GPT-5.4 mini',
     input: 0.75,
     cached: 0.075,
     output: 4.5,
+    url: 'https://developers.openai.com/api/docs/models/gpt-5.4-mini',
   },
 };
 
 const MODEL_MAP = {
+  'gpt-6-astra': 'gpt6Astra',
+  'gpt-6.1-sol': 'gpt61Sol',
+  'gpt-6-sol': 'gpt6Sol',
+  'gpt-6-luna': 'gpt6Luna',
   'gpt-5.6': 'gpt56Sol',
   'gpt-5.6-sol': 'gpt56Sol',
   'gpt-5.6-terra': 'gpt56Terra',
@@ -139,6 +178,10 @@ const REASONING_EFFORT_LABELS = {
   unknown: '未知 (unknown)',
 };
 const FIXED_MODEL_ORDER = [
+  'gpt-6-astra',
+  'gpt-6.1-sol',
+  'gpt-6-sol',
+  'gpt-6-luna',
   'gpt-5.6-sol',
   'gpt-5.6-terra',
   'gpt-5.6-luna',
@@ -736,7 +779,12 @@ function SettingsPanel({ prices, setPrices, fxRate, setFxRate }) {
       <div className="settings-grid">
         {Object.entries(prices).map(([key, price]) => (
           <div className="price-box" key={key}>
-            <strong>{price.label}</strong>
+            <div className="price-box-header">
+              <strong>{price.label}</strong>
+              <a href={price.url} target="_blank" rel="noopener noreferrer" title={`${price.label} 官方价格`} aria-label={`${price.label} 官方价格`}>
+                <ExternalLink size={16} aria-hidden="true" />
+              </a>
+            </div>
             <label>Input <input value={price.input} type="number" step="0.001" onChange={(event) => updatePrice(key, 'input', event.target.value)} /></label>
             <label>Cached <input value={price.cached} type="number" step="0.001" onChange={(event) => updatePrice(key, 'cached', event.target.value)} /></label>
             <label>Output <input value={price.output} type="number" step="0.001" onChange={(event) => updatePrice(key, 'output', event.target.value)} /></label>
@@ -744,6 +792,10 @@ function SettingsPanel({ prices, setPrices, fxRate, setFxRate }) {
         ))}
         <div className="price-box mapping-box">
           <strong>模型映射</strong>
+          <p>gpt-6-astra → GPT-6 Astra</p>
+          <p>gpt-6.1-sol → GPT-6.1 Sol</p>
+          <p>gpt-6-sol → GPT-6 Sol</p>
+          <p>gpt-6-luna → GPT-6 Luna</p>
           <p>gpt-5.6 / gpt-5.6-sol → GPT-5.6 Sol</p>
           <p>gpt-5.6-terra → GPT-5.6 Terra</p>
           <p>gpt-5.6-luna → GPT-5.6 Luna</p>

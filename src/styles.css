@@ -403,6 +403,19 @@ h1 {
   gap: 8px;
 }
 
+.price-box-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.price-box-header a {
+  display: inline-flex;
+  flex: none;
+  color: #3f6574;
+}
+
 .price-box label {
   display: grid;
   grid-template-columns: 70px 1fr;

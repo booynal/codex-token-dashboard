@@ -173,6 +173,10 @@ Reasoning output tokens are displayed as a detail and are not added a second tim
 
 Internal Codex model names are mapped to public GPT pricing buckets in the UI settings:
 
+- `gpt-6-astra` -> GPT-6 Astra
+- `gpt-6.1-sol` -> GPT-6.1 Sol
+- `gpt-6-sol` -> GPT-6 Sol
+- `gpt-6-luna` -> GPT-6 Luna
 - `gpt-5.6`, `gpt-5.6-sol` -> GPT-5.6 Sol
 - `gpt-5.6-terra` -> GPT-5.6 Terra
 - `gpt-5.6-luna` -> GPT-5.6 Luna
@@ -180,7 +184,7 @@ Internal Codex model names are mapped to public GPT pricing buckets in the UI se
 - `gpt-5.4`, `gpt-5.2`, `codex-auto-review` -> GPT-5.4
 - `gpt-5.4-mini`, `gpt-5.1-codex-mini` -> GPT-5.4 mini
 
-You can adjust the price table and USD/CNY exchange rate in the dashboard.
+You can adjust the price table and USD/CNY exchange rate in the dashboard. Each price card links to the corresponding official OpenAI model pricing page. GPT-5.6 Sol uses promotional pricing available at least through November 21, 2026.
 
 ## Development
 
