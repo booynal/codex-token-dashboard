@@ -1,6 +1,6 @@
 {
   "name": "@booynal/codex-token-dashboard",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "description": "A local dashboard for visualizing Codex token usage from ~/.codex logs.",
   "license": "MIT",
   "type": "module",
