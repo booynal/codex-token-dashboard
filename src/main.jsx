@@ -239,9 +239,25 @@ function App() {
   const [hoveredTrendSeries, setHoveredTrendSeries] = useState(null);
   const refreshTimerRef = useRef(null);
   const hourlyRefreshTimerRef = useRef(null);
+  const filtersRef = useRef(filters);
+  useEffect(() => {
+    filtersRef.current = filters;
+  }, [filters]);
   const isMobile = useMediaQuery('(max-width: 720px)');
   const isTodayPreset = filters.datePreset === 'today';
   const loadUsage = useCallback(async ({ refresh = false, background = false } = {}) => {
+    const currentFilters = filtersRef.current;
+    const dateRange = refresh && currentFilters.datePreset && currentFilters.datePreset !== 'all'
+      ? getDateRangePreset(currentFilters.datePreset)
+      : { startDate: currentFilters.startDate, endDate: currentFilters.endDate };
+    const refreshRequest = refresh
+      ? getCoverageRequest({ ...currentFilters, ...dateRange })
+      : null;
+    if (refresh && currentFilters.datePreset && currentFilters.datePreset !== 'all') {
+      setFilters((current) => current.datePreset === currentFilters.datePreset
+        ? { ...current, ...dateRange }
+        : current);
+    }
     if (!background) {
       setError('');
       refresh ? setRefreshing(true) : setLoading(true);
@@ -249,6 +265,8 @@ function App() {
     try {
       const response = await fetch(refresh ? '/api/refresh' : '/api/usage', {
         method: refresh ? 'POST' : 'GET',
+        headers: refreshRequest ? { 'Content-Type': 'application/json' } : undefined,
+        body: refreshRequest ? JSON.stringify(refreshRequest) : undefined,
       });
       if (!response.ok) throw new Error(getApiErrorMessage(response, refresh ? '刷新日志' : '读取日志'));
       const data = await response.json();

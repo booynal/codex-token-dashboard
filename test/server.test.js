@@ -6,7 +6,8 @@ import { after, test } from 'node:test';
 import { createApp } from '../server/index.js';
 
 const codexDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-token-dashboard-'));
-const rolloutDir = path.join(codexDir, 'sessions', '2026', '08', '18');
+const testDate = shanghaiToday();
+const rolloutDir = path.join(codexDir, 'sessions', ...testDate.split('-'));
 const rolloutPath = path.join(rolloutDir, 'rollout-session-a.jsonl');
 fs.mkdirSync(rolloutDir, { recursive: true });
 
@@ -28,7 +29,9 @@ test('refreshes changed logs, invalidates metadata, and keeps invalid counts out
   assert.deepEqual(concurrent.events, first.events);
   assert.equal(first.events[0].totalTokens, 100);
 
-  fs.writeFileSync(path.join(codexDir, 'session_index.jsonl'), '{"id":"session-a","thread_name":"renamed session","updated_at":"2026-08-18T10:00:00Z"}\n');
+  fs.writeFileSync(path.join(codexDir, 'session_index.jsonl'), `${JSON.stringify({
+    id: 'session-a', thread_name: 'renamed session', updated_at: `${testDate}T10:00:00Z`,
+  })}\n`);
   writeRollout([
     validUsage({ input: 70, cached: 20, output: 30, total: 100 }),
     validUsage({ input: 'not-a-number', cached: 20, output: 5, total: -1, minute: '01' }),
@@ -108,6 +111,92 @@ test('manual refresh stays bounded to the ranges already loaded', async (t) => {
   assert.equal(refreshed.eventCount, 1);
 });
 
+test('rolling refresh scans only the requested week and preserves previously loaded history', async (t) => {
+  const fixture = createRangeFixture();
+  t.after(() => fs.rmSync(fixture.codexDir, { recursive: true, force: true }));
+  const { app } = createApp({ codexDir: fixture.codexDir, includeArchived: false, quickMode: true });
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise((resolve) => server.once('listening', resolve));
+  t.after(() => server.close());
+  const url = `http://127.0.0.1:${server.address().port}`;
+
+  await fetch(`${url}/api/usage`);
+  const invalid = await fetch(`${url}/api/refresh`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ startDate: fixture.today, endDate: fixture.oldestDate }),
+  });
+  assert.equal(invalid.status, 400);
+  await fetch(`${url}/api/scan-range`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ startDate: fixture.oldestDate, endDate: fixture.today }),
+  });
+  const expanded = await waitForReadyScan(url);
+  assert.equal(expanded.eventCount, 3);
+
+  const nextDay = shiftDate(fixture.today, 1);
+  const nextWeekStart = shiftDate(nextDay, -6);
+  writeRolloutForDate(fixture.codexDir, nextDay, 40);
+  writeRolloutForDate(fixture.codexDir, fixture.oldestDate, 999);
+  writeRolloutForDate(fixture.codexDir, fixture.recentDate, 50);
+  const request = { startDate: nextWeekStart, endDate: nextDay };
+  const scanning = await fetch(`${url}/api/refresh`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  }).then((response) => response.json());
+  assert.deepEqual(scanning.scan.request.ranges, [request]);
+
+  const refreshed = await waitForReadyScan(url);
+  assert.deepEqual(refreshed.scan.coverage, {
+    all: false,
+    ranges: [{ startDate: fixture.oldestDate, endDate: nextDay }],
+  });
+  assert.deepEqual(refreshed.events.map((event) => [event.date, event.inputTokens]), [
+    [fixture.oldestDate, 10],
+    [fixture.middleDate, 20],
+    [fixture.recentDate, 50],
+    [nextDay, 40],
+  ]);
+  assert.equal(refreshed.fileCount, 4);
+
+  fs.rmSync(path.join(fixture.codexDir, 'sessions', ...fixture.recentDate.split('-'), `rollout-${fixture.recentDate}T08-00-00.jsonl`));
+  await fetch(`${url}/api/refresh`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+  const afterDeletion = await waitForReadyScan(url);
+  assert.deepEqual(afterDeletion.events.map((event) => event.date), [fixture.oldestDate, fixture.middleDate, nextDay]);
+  assert.equal(afterDeletion.fileCount, 3);
+});
+
+test('bounded refresh retains all-history coverage', async (t) => {
+  const fixture = createRangeFixture();
+  t.after(() => fs.rmSync(fixture.codexDir, { recursive: true, force: true }));
+  const { app } = createApp({ codexDir: fixture.codexDir, includeArchived: false, quickMode: true });
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise((resolve) => server.once('listening', resolve));
+  t.after(() => server.close());
+  const url = `http://127.0.0.1:${server.address().port}`;
+
+  await fetch(`${url}/api/usage`);
+  await fetch(`${url}/api/scan-all`, { method: 'POST' });
+  await waitForReadyScan(url);
+  const request = { startDate: fixture.recentStart, endDate: fixture.today };
+  const scanning = await fetch(`${url}/api/refresh`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  }).then((response) => response.json());
+  assert.equal(scanning.scan.request.all, false);
+  assert.deepEqual(scanning.scan.request.ranges, [request]);
+  const refreshed = await waitForReadyScan(url);
+  assert.deepEqual(refreshed.scan.coverage, { all: true, ranges: [] });
+  assert.equal(refreshed.eventCount, 3);
+});
+
 function writeRollout(records) {
   const meta = {
     type: 'session_meta',
@@ -117,7 +206,7 @@ function writeRollout(records) {
   fs.writeFileSync(rolloutPath, [meta, context, ...records].map((record) => JSON.stringify(record)).join('\n'));
 }
 
-function validUsage({ input, cached, output, total, date = '2026-08-18', minute = '00' }) {
+function validUsage({ input, cached, output, total, date = testDate, minute = '00' }) {
   return {
     type: 'event_msg',
     timestamp: `${date}T10:${minute}:00Z`,

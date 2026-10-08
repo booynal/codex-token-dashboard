@@ -42,12 +42,20 @@ export function createApp(options = {}) {
     }
   });
 
-  app.post('/api/refresh', async (_req, res) => {
+  app.post('/api/refresh', async (req, res) => {
     try {
       if (!cache) await startInitialScan();
-      res.json(scheduleScan({ mode: 'refresh', ranges: coverage.ranges, all: coverage.all }));
+      const requestedRange = req.body?.startDate || req.body?.endDate
+        ? normalizeRequestedRange(req.body)
+        : null;
+      const refreshAll = req.body?.all === true || (!requestedRange && coverage.all);
+      res.json(scheduleScan({
+        mode: 'refresh',
+        ranges: requestedRange ? [requestedRange] : coverage.ranges,
+        all: refreshAll,
+      }));
     } catch (error) {
-      res.status(500).json({ error: error.message });
+      res.status(error.message === '日期范围无效' ? 400 : 500).json({ error: error.message });
     }
   });
 
@@ -97,7 +105,7 @@ export function createApp(options = {}) {
     if (request.mode === 'expand' && isCoverageRequestSatisfied(request, coverage)) return cache;
     if (request.mode === 'all' && coverage.all) return cache;
 
-    pendingScanRequest = mergeScanRequests(pendingScanRequest, request, coverage);
+    pendingScanRequest = mergeScanRequests(pendingScanRequest, request);
     cache = withScanStatus(cache, {
       ...cache.scan,
       state: 'scanning',
@@ -141,7 +149,7 @@ export function createApp(options = {}) {
     const requestedRanges = request.all
       ? []
       : request.mode === 'refresh'
-        ? normalizeDateRanges([...coverage.ranges, ...request.ranges])
+        ? normalizeDateRanges(request.ranges)
         : subtractCoverageRanges(request.ranges, coverage.ranges);
     if (!request.all && !requestedRanges.length) return;
 
@@ -168,13 +176,13 @@ export function createApp(options = {}) {
       return;
     }
 
-    const nextCoverage = {
+    const nextCoverage = coverage.all ? coverage : {
       all: false,
       ranges: normalizeDateRanges([...coverage.ranges, ...requestedRanges]),
     };
     coverage = nextCoverage;
     const nextSnapshot = request.mode === 'refresh'
-      ? result
+      ? mergeRefreshedScanResults(cache, result, requestedRanges)
       : mergeScanResults(cache, result);
     cache = withScanStatus(nextSnapshot, { ...cache.scan, coverage });
     console.log(formatScanLog(request.mode === 'refresh' ? 'Coverage refresh complete' : 'Range expansion complete', result));
@@ -390,14 +398,12 @@ function isCoverageRequestSatisfied(request, currentCoverage) {
   return currentCoverage.all || subtractCoverageRanges(request.ranges, currentCoverage.ranges).length === 0;
 }
 
-function mergeScanRequests(current, next, currentCoverage) {
+function mergeScanRequests(current, next) {
   if (!current) return next;
   if (current.all || next.all) return { mode: 'all', all: true, ranges: [] };
   const ranges = normalizeDateRanges([...current.ranges, ...next.ranges]);
   const mode = current.mode === 'refresh' || next.mode === 'refresh' ? 'refresh' : 'expand';
-  return mode === 'refresh'
-    ? { mode, all: currentCoverage.all, ranges: normalizeDateRanges([...currentCoverage.ranges, ...ranges]) }
-    : { mode, all: false, ranges };
+  return { mode, all: false, ranges };
 }
 
 function scanRequestSummary(request) {
@@ -426,6 +432,30 @@ function mergeScanResults(current, delta) {
     events: mergedEvents,
     files: [...files.values()],
     warnings: [...warnings.values()],
+  };
+}
+
+function mergeRefreshedScanResults(current, delta, ranges) {
+  const retainedEvents = current.events.filter((event) => !isDateInRanges(event.date, ranges));
+  const refreshedPaths = new Set(delta.files.map((file) => file.path));
+  const previouslyRefreshedPaths = new Set(current.events
+    .filter((event) => isDateInRanges(event.date, ranges))
+    .map((event) => event.filePath));
+  const retainedFiles = current.files.filter((file) => {
+    const pathDate = getDateFromPath(file.path);
+    return !refreshedPaths.has(file.path)
+      && !(pathDate && isDateInRanges(pathDate, ranges))
+      && !previouslyRefreshedPaths.has(file.path);
+  });
+  const events = [...retainedEvents, ...delta.events].sort((left, right) => left.timestamp.localeCompare(right.timestamp));
+  const files = [...retainedFiles, ...delta.files];
+  return {
+    ...delta,
+    eventCount: events.length,
+    fileCount: files.length,
+    events,
+    files,
+    warnings: delta.warnings,
   };
 }
 
