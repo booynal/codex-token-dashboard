@@ -30,6 +30,7 @@ It is intentionally a usage-analysis tool, not an OpenAI billing console. Cost f
 ## Dashboard Behavior
 
 - The initial view is filtered to the most recent seven days.
+- The selected date range is retained when reloading the same browser tab; rolling presets are recalculated for the current date.
 - Choosing a longer preset or a bounded custom date range scans and merges only the days that have not been loaded. Loaded data remains visible during the scan.
 - **全部** is the only selection that scans all available history. The **加载全部历史** command has the same explicit behavior.
 - Refresh rescans the selected date range while retaining previously loaded history. Rolling presets such as **近一周** advance with the date, so their refresh scans stay bounded. An open dashboard also refreshes automatically once at each local hour boundary.

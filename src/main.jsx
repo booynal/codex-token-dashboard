@@ -216,21 +216,20 @@ const DATE_PRESET_GROUPS = [
 const DATE_PRESET_LABELS = Object.fromEntries(
   DATE_PRESET_GROUPS.flatMap(({ options }) => options)
 );
+const DATE_SELECTION_KEY = 'codex-token-dashboard-date-selection';
 
 function App() {
   const [raw, setRaw] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [refreshing, setRefreshing] = useState(false);
-  const [filters, setFilters] = useState({
+  const [filters, setFilters] = useState(() => ({
     source: 'all',
     model: 'all',
     reasoningEffort: 'all',
     cwd: 'all',
-    startDate: '',
-    endDate: '',
-    datePreset: '',
-  });
+    ...(readSavedDateSelection() || { datePreset: 'lastWeek', ...getDateRangePreset('lastWeek') }),
+  }));
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
   const [prices, setPrices] = useState(DEFAULT_PRICES);
@@ -243,6 +242,17 @@ function App() {
   useEffect(() => {
     filtersRef.current = filters;
   }, [filters]);
+  useEffect(() => {
+    try {
+      window.sessionStorage.setItem(DATE_SELECTION_KEY, JSON.stringify({
+        datePreset: filters.datePreset,
+        startDate: filters.startDate,
+        endDate: filters.endDate,
+      }));
+    } catch {
+      // The dashboard still works when browser storage is unavailable.
+    }
+  }, [filters.datePreset, filters.startDate, filters.endDate]);
   const isMobile = useMediaQuery('(max-width: 720px)');
   const isTodayPreset = filters.datePreset === 'today';
   const loadUsage = useCallback(async ({ refresh = false, background = false } = {}) => {
@@ -1456,18 +1466,26 @@ function EmptyState({ text }) {
 }
 
 function fillDefaultDateRange(current, events, scan) {
-  if (!events.length) return current;
-  if (current.datePreset === 'all') {
+  if (events.length && current.datePreset === 'all') {
     return scan?.coverage?.all
       ? { ...current, ...getEventDateRange(events) }
       : current;
   }
-  if (current.startDate || current.endDate) return current;
-  return {
-    ...current,
-    datePreset: 'lastWeek',
-    ...getDateRangePreset('lastWeek'),
-  };
+  return current;
+}
+
+function readSavedDateSelection() {
+  try {
+    const saved = JSON.parse(window.sessionStorage.getItem(DATE_SELECTION_KEY));
+    if (!saved || !Object.hasOwn(DATE_PRESET_LABELS, saved.datePreset)) return null;
+    if (saved.datePreset === 'all') return { datePreset: 'all', startDate: '', endDate: '' };
+    if (saved.datePreset) return { datePreset: saved.datePreset, ...getDateRangePreset(saved.datePreset) };
+    if (typeof saved.startDate !== 'string' || typeof saved.endDate !== 'string') return null;
+    if (![saved.startDate, saved.endDate].every((date) => !date || /^\d{4}-\d{2}-\d{2}$/.test(date))) return null;
+    return { datePreset: '', startDate: saved.startDate, endDate: saved.endDate };
+  } catch {
+    return null;
+  }
 }
 
 function getEventDateRange(events) {
