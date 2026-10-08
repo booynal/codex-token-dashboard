@@ -34,6 +34,7 @@ It is intentionally a usage-analysis tool, not an OpenAI billing console. Cost f
 - Choosing a longer preset or a bounded custom date range scans and merges only the days that have not been loaded. Loaded data remains visible during the scan.
 - **全部** is the only selection that scans all available history. The **加载全部历史** command has the same explicit behavior.
 - Refresh rescans the selected date range while retaining previously loaded history. Rolling presets such as **近一周** advance with the date, so their refresh scans stay bounded. An open dashboard also refreshes automatically once at each local hour boundary.
+- Reloading a page refreshes the selected range unless a scan completed in the past 10 seconds; repeated reloads share this server-side guard. The **刷新数据** button always starts a refresh, regardless of the guard.
 - Historical total and cost cards identify themselves as **已加载** until all history is explicitly loaded. Scan status shows the exact loaded coverage.
 - The reasoning-effort filter and breakdown aggregate `low`, `medium`, `high`, and `xhigh` from rollout context; older records without the field appear as `未知`.
 - The source filter can isolate `Codex Desktop` and `Codex CLI` sessions using the rollout `originator` field.

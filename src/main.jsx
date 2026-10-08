@@ -255,15 +255,16 @@ function App() {
   }, [filters.datePreset, filters.startDate, filters.endDate]);
   const isMobile = useMediaQuery('(max-width: 720px)');
   const isTodayPreset = filters.datePreset === 'today';
-  const loadUsage = useCallback(async ({ refresh = false, background = false } = {}) => {
+  const loadUsage = useCallback(async ({ refresh = false, onLoad = false, background = false } = {}) => {
     const currentFilters = filtersRef.current;
-    const dateRange = refresh && currentFilters.datePreset && currentFilters.datePreset !== 'all'
+    const shouldRefresh = refresh || onLoad;
+    const dateRange = shouldRefresh && currentFilters.datePreset && currentFilters.datePreset !== 'all'
       ? getDateRangePreset(currentFilters.datePreset)
       : { startDate: currentFilters.startDate, endDate: currentFilters.endDate };
-    const refreshRequest = refresh
+    const refreshRequest = shouldRefresh
       ? getCoverageRequest({ ...currentFilters, ...dateRange })
       : null;
-    if (refresh && currentFilters.datePreset && currentFilters.datePreset !== 'all') {
+    if (shouldRefresh && currentFilters.datePreset && currentFilters.datePreset !== 'all') {
       setFilters((current) => current.datePreset === currentFilters.datePreset
         ? { ...current, ...dateRange }
         : current);
@@ -273,12 +274,13 @@ function App() {
       refresh ? setRefreshing(true) : setLoading(true);
     }
     try {
-      const response = await fetch(refresh ? '/api/refresh' : '/api/usage', {
-        method: refresh ? 'POST' : 'GET',
+      const endpoint = onLoad ? '/api/refresh-on-load' : refresh ? '/api/refresh' : '/api/usage';
+      const response = await fetch(endpoint, {
+        method: shouldRefresh ? 'POST' : 'GET',
         headers: refreshRequest ? { 'Content-Type': 'application/json' } : undefined,
         body: refreshRequest ? JSON.stringify(refreshRequest) : undefined,
       });
-      if (!response.ok) throw new Error(getApiErrorMessage(response, refresh ? '刷新日志' : '读取日志'));
+      if (!response.ok) throw new Error(getApiErrorMessage(response, shouldRefresh ? '刷新日志' : '读取日志'));
       const data = await response.json();
       setRaw(data);
       setFilters((current) => fillDefaultDateRange(current, data.events || [], data.scan));
@@ -325,7 +327,7 @@ function App() {
   }, []);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => loadUsage(), 0);
+    const timer = window.setTimeout(() => loadUsage({ onLoad: true }), 0);
     return () => window.clearTimeout(timer);
   }, [loadUsage]);
 

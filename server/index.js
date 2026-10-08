@@ -7,6 +7,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const HOME = os.homedir();
 const DEFAULT_CODEX_DIR = path.join(HOME, '.codex');
 const RECENT_DAYS = 7;
+const PAGE_LOAD_REFRESH_COOLDOWN_MS = 10_000;
 
 export function createApp(options = {}) {
   const app = express();
@@ -18,6 +19,8 @@ export function createApp(options = {}) {
   let activeScanPromise = null;
   let pendingScanRequest = null;
   let scanQueue = Promise.resolve();
+  let lastScanCompletedAt = null;
+  const now = options.now || (() => performance.now());
 
   app.use(express.json());
 
@@ -45,15 +48,27 @@ export function createApp(options = {}) {
   app.post('/api/refresh', async (req, res) => {
     try {
       if (!cache) await startInitialScan();
-      const requestedRange = req.body?.startDate || req.body?.endDate
-        ? normalizeRequestedRange(req.body)
-        : null;
-      const refreshAll = req.body?.all === true || (!requestedRange && coverage.all);
-      res.json(scheduleScan({
-        mode: 'refresh',
-        ranges: requestedRange ? [requestedRange] : coverage.ranges,
-        all: refreshAll,
-      }));
+      const request = normalizeRefreshRequest(req.body);
+      res.json(scheduleScan(request));
+    } catch (error) {
+      res.status(error.message === '日期范围无效' ? 400 : 500).json({ error: error.message });
+    }
+  });
+
+  app.post('/api/refresh-on-load', async (req, res) => {
+    try {
+      const request = normalizeRefreshRequest(req.body);
+      if (!cache) {
+        res.json(await startInitialScan());
+        return;
+      }
+      if (cache.scan.state === 'scanning'
+        || (cache.scan.state !== 'failed'
+          && lastScanCompletedAt !== null && now() - lastScanCompletedAt < PAGE_LOAD_REFRESH_COOLDOWN_MS)) {
+        res.json(cache);
+        return;
+      }
+      res.json(scheduleScan(request));
     } catch (error) {
       res.status(error.message === '日期范围无效' ? 400 : 500).json({ error: error.message });
     }
@@ -92,12 +107,24 @@ export function createApp(options = {}) {
         coverage,
         quickMode: config.quickMode,
       });
+      lastScanCompletedAt = now();
       console.log(formatScanLog('Initial range scan complete', initialResult));
       return cache;
     }).finally(() => {
       initialScanPromise = null;
     });
     return initialScanPromise;
+  }
+
+  function normalizeRefreshRequest(body) {
+    const requestedRange = body?.startDate || body?.endDate
+      ? normalizeRequestedRange(body)
+      : null;
+    return {
+      mode: 'refresh',
+      ranges: requestedRange ? [requestedRange] : coverage.ranges,
+      all: body?.all === true || (!requestedRange && coverage.all),
+    };
   }
 
   function scheduleScan(request) {
@@ -134,6 +161,7 @@ export function createApp(options = {}) {
         coverage,
         request: null,
       });
+      lastScanCompletedAt = now();
     } catch (error) {
       cache = withScanStatus(cache, {
         ...cache.scan,

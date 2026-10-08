@@ -111,6 +111,117 @@ test('manual refresh stays bounded to the ranges already loaded', async (t) => {
   assert.equal(refreshed.eventCount, 1);
 });
 
+test('page-load refresh has a shared ten-second guard while manual refresh bypasses it', async (t) => {
+  const fixture = createRangeFixture();
+  t.after(() => fs.rmSync(fixture.codexDir, { recursive: true, force: true }));
+  let clock = 0;
+  const { app } = createApp({
+    codexDir: fixture.codexDir,
+    includeArchived: false,
+    quickMode: true,
+    now: () => clock,
+  });
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise((resolve) => server.once('listening', resolve));
+  t.after(() => server.close());
+  const url = `http://127.0.0.1:${server.address().port}`;
+  const range = { startDate: fixture.recentStart, endDate: fixture.today };
+  const postRefresh = (endpoint, body = range) => fetch(`${url}${endpoint}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+
+  const [first, concurrent] = await Promise.all([
+    postRefresh('/api/refresh-on-load').then((response) => response.json()),
+    postRefresh('/api/refresh-on-load').then((response) => response.json()),
+  ]);
+  assert.equal(first.scan.state, 'ready');
+  assert.equal(concurrent.generatedAt, first.generatedAt);
+  assert.equal(first.events[0].inputTokens, 30);
+
+  writeRolloutForDate(fixture.codexDir, fixture.recentDate, 500);
+  clock = 9_999;
+  const skipped = await postRefresh('/api/refresh-on-load').then((response) => response.json());
+  assert.equal(skipped.scan.state, 'ready');
+  assert.equal(skipped.events[0].inputTokens, 30);
+
+  clock = 10_000;
+  const [scanning, repeated] = await Promise.all([
+    postRefresh('/api/refresh-on-load').then((response) => response.json()),
+    postRefresh('/api/refresh-on-load').then((response) => response.json()),
+  ]);
+  assert.equal(scanning.scan.state, 'scanning');
+  assert.equal(repeated.scan.state, 'scanning');
+  assert.deepEqual(scanning.scan.request.ranges, [range]);
+  clock = 15_000;
+  const refreshed = await waitForReadyScan(url);
+  assert.equal(refreshed.events[0].inputTokens, 500);
+
+  clock = 20_000;
+  const afterSlowScan = await postRefresh('/api/refresh-on-load').then((response) => response.json());
+  assert.equal(afterSlowScan.scan.state, 'ready');
+  assert.equal(afterSlowScan.generatedAt, refreshed.generatedAt);
+
+  writeRolloutForDate(fixture.codexDir, fixture.recentDate, 7_000);
+  clock = 20_001;
+  const manual = await postRefresh('/api/refresh').then((response) => response.json());
+  assert.equal(manual.scan.state, 'scanning');
+  const manuallyRefreshed = await waitForReadyScan(url);
+  assert.equal(manuallyRefreshed.events[0].inputTokens, 7_000);
+
+  clock = 20_002;
+  const afterManual = await postRefresh('/api/refresh-on-load').then((response) => response.json());
+  assert.equal(afterManual.scan.state, 'ready');
+  assert.equal(afterManual.generatedAt, manuallyRefreshed.generatedAt);
+
+  const invalid = await postRefresh('/api/refresh-on-load', {
+    startDate: fixture.today,
+    endDate: fixture.recentStart,
+  });
+  assert.equal(invalid.status, 400);
+});
+
+test('page-load refresh scans the selected range without rescanning older loaded dates', async (t) => {
+  const fixture = createRangeFixture();
+  t.after(() => fs.rmSync(fixture.codexDir, { recursive: true, force: true }));
+  let clock = 0;
+  const { app } = createApp({
+    codexDir: fixture.codexDir,
+    includeArchived: false,
+    quickMode: true,
+    now: () => clock,
+  });
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise((resolve) => server.once('listening', resolve));
+  t.after(() => server.close());
+  const url = `http://127.0.0.1:${server.address().port}`;
+
+  await fetch(`${url}/api/usage`);
+  await fetch(`${url}/api/scan-range`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ startDate: fixture.oldestDate, endDate: fixture.today }),
+  });
+  await waitForReadyScan(url);
+
+  clock = 10_000;
+  const range = { startDate: fixture.recentStart, endDate: fixture.today };
+  const scanning = await fetch(`${url}/api/refresh-on-load`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(range),
+  }).then((response) => response.json());
+  assert.deepEqual(scanning.scan.request.ranges, [range]);
+  const refreshed = await waitForReadyScan(url);
+  assert.deepEqual(refreshed.scan.coverage.ranges, [
+    { startDate: fixture.oldestDate, endDate: fixture.today },
+  ]);
+  assert.deepEqual(refreshed.events.map((event) => event.date), [
+    fixture.oldestDate, fixture.middleDate, fixture.recentDate,
+  ]);
+});
+
 test('rolling refresh scans only the requested week and preserves previously loaded history', async (t) => {
   const fixture = createRangeFixture();
   t.after(() => fs.rmSync(fixture.codexDir, { recursive: true, force: true }));
